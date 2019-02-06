@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <stdlib.h>
+#include <math.h>
 #include <sys/types.h>
 #include <algorithm>
 #include <iostream>
@@ -41,16 +42,18 @@ enum FilteringOutcomes_t {
   kBkgmodelHighPPF,             //!< Read filtered out by Analysis, percent positive flows too high
   kBkgmodelPolyclonal,          //!< Read filtered out by Analysis, looks polyclonal
   kBkgmodelFailedKeypass,       //!< Read filtered out by Analysis, key sequence not a perfect match
-  kFilterShortAdapterTrim,    //!< Read filtered out, too short after adapter trimming
-  kFilterShortQualityTrim,    //!< Read filtered out, too short after quality trimming
-  kFilterShortTagTrim         //!< Read filtered out, too short after suffix (tag/extr-trim-right) trimming
+  kFilterShortAdapterTrim,      //!< Read filtered out, too short after adapter trimming
+  kFilterShortQualityTrim,      //!< Read filtered out, too short after quality trimming
+  kFilterShortTagTrim,          //!< Read filtered out, too short after suffix (tag/extr-trim-right) trimming
+  kFilterShortBarcode           //!< Read filtered out, too short after end barcode trimming
 };
 
 enum QualityTrimmingModes {
   kQvTrimOff,                    //!< Quality trimming disabled
   kQvTrimWindowed,               //!< Sliding window quality trimming
   kQvTrimExpectedErrors,         //!< Expected number of errors quality trimming
-  kQvTrimAll                     //!< Quality trimming using all available methods
+  kQvTrimAll,                    //!< Quality trimming using all available methods
+  kQvTrimMaxInfo				 //!< Maximum information quality filtering
 };
 
 
@@ -97,6 +100,7 @@ ReadFilteringHistory::ReadFilteringHistory()
   n_bases_after_high_residual       = -1;
   n_bases_after_quality_filter      = -1;
   n_bases_after_adapter_trim        = -1;
+  n_bases_after_barcode_trim        = -1;
   n_bases_after_tag_trim            = -1;
   n_bases_after_extra_trim          = -1;
   n_bases_after_quality_trim        = -1;
@@ -145,7 +149,6 @@ ReadFilteringStats::ReadFilteringStats()
   num_bases_removed_short_               = 0;
   num_bases_removed_keypass_             = 0;
   num_bases_removed_residual_            = 0;
-  //num_bases_removed_beverly_ = 0;
   num_bases_removed_quality_filt_        = 0;
   num_bases_removed_adapter_trim_        = 0;
   num_bases_removed_quality_trim_        = 0;
@@ -160,11 +163,11 @@ ReadFilteringStats::ReadFilteringStats()
   num_reads_removed_short_               = 0;
   num_reads_removed_keypass_             = 0;
   num_reads_removed_residual_            = 0;
-  //num_reads_removed_beverly_ = 0;
   num_reads_removed_quality_filt_        = 0;
   num_reads_removed_adapter_trim_        = 0;
-  num_reads_removed_tag_trim_            = 0;
-  num_reads_removed_extra_trim_          = 0;
+  num_reads_removed_barcode_trim_        = 0; // To short after 3' barcode trimming
+  num_reads_removed_tag_trim_            = 0; // To short after 3' tag trimming
+  num_reads_removed_extra_trim_          = 0; // To short after 3' extra trimming
   num_reads_removed_quality_trim_        = 0;
   num_reads_final_                       = 0;
 }
@@ -215,14 +218,14 @@ void ReadFilteringStats::AddRead(const ReadFilteringHistory& read_filtering_hist
   if (read_filtering_history.n_bases_after_high_residual == 0)
     num_reads_removed_residual_++;
 
-  //if (read_filtering_history.n_bases_after_beverly_trim == 0)
-  //  num_reads_removed_beverly_++;
-
   if (read_filtering_history.n_bases_after_quality_filter == 0)
     num_reads_removed_quality_filt_++;
 
   if (read_filtering_history.n_bases_after_adapter_trim == 0)
     num_reads_removed_adapter_trim_++;
+
+  if (read_filtering_history.n_bases_after_barcode_trim == 0)
+    num_reads_removed_barcode_trim_++;
 
   if (read_filtering_history.n_bases_after_tag_trim == 0)
     num_reads_removed_tag_trim_++;
@@ -244,11 +247,11 @@ void ReadFilteringStats::AddRead(const ReadFilteringHistory& read_filtering_hist
   // Step 2: Base accounting
 
   // 5' trimming base accounting
-  num_bases_initial_                += read_filtering_history.n_bases;
-  num_bases_removed_key_trim_       += read_filtering_history.n_bases_key;
-  num_bases_removed_barcode_trim_   += read_filtering_history.n_bases_barcode - read_filtering_history.n_bases_key;
-  num_bases_removed_tag_trim_       += read_filtering_history.n_bases_tag - read_filtering_history.n_bases_barcode;
-  num_bases_removed_extra_trim_     += read_filtering_history.n_bases_prefix - read_filtering_history.n_bases_tag;
+  num_bases_initial_                += max(0, read_filtering_history.n_bases);
+  num_bases_removed_key_trim_       += max(0, read_filtering_history.n_bases_key);
+  num_bases_removed_barcode_trim_   += max(0, read_filtering_history.n_bases_barcode - read_filtering_history.n_bases_key);
+  num_bases_removed_tag_trim_       += max(0, read_filtering_history.n_bases_tag - read_filtering_history.n_bases_barcode);
+  num_bases_removed_extra_trim_     += max(0, read_filtering_history.n_bases_prefix - read_filtering_history.n_bases_tag);
 
   // Read filtering and 3' trimming base accounting
   int current_n_bases = max(0, read_filtering_history.n_bases - read_filtering_history.n_bases_prefix);
@@ -282,6 +285,11 @@ void ReadFilteringStats::AddRead(const ReadFilteringHistory& read_filtering_hist
     num_bases_removed_adapter_trim_ += current_n_bases - new_n_bases;
     current_n_bases = new_n_bases;
   }
+  if (read_filtering_history.n_bases_after_barcode_trim >= 0) {
+    int new_n_bases = max(0, read_filtering_history.n_bases_after_barcode_trim - read_filtering_history.n_bases_prefix);
+    num_bases_removed_barcode_trim_ += current_n_bases - new_n_bases;
+    current_n_bases = new_n_bases;
+  }
   if (read_filtering_history.n_bases_after_tag_trim >= 0) {
     int new_n_bases = max(0, read_filtering_history.n_bases_after_tag_trim - read_filtering_history.n_bases_prefix);
     num_bases_removed_tag_trim_ += current_n_bases - new_n_bases;
@@ -302,10 +310,13 @@ void ReadFilteringStats::AddRead(const ReadFilteringHistory& read_filtering_hist
 
   // Step 3: Bead Adapter accounting
 
-  if(not read_filtering_history.is_filtered and read_filtering_history.adapter_type >= 0) {
-    adapter_class_num_reads_.at(read_filtering_history.adapter_type)++;
+  if(not read_filtering_history.is_filtered) {
 
-    if (read_filtering_history.adapter_type < (int)adapter_class_cum_score_.size()) {
+    if (read_filtering_history.adapter_type < 0){
+      adapter_class_num_reads_.at(bead_adapters_.size())++;
+    }
+    else {
+      adapter_class_num_reads_.at(read_filtering_history.adapter_type)++;
       adapter_class_cum_score_.at(read_filtering_history.adapter_type) += read_filtering_history.adapter_score;
       if (read_filtering_history.adapter_decision) {
         adapter_class_num_decisions_.at(read_filtering_history.adapter_type)++;
@@ -347,6 +358,7 @@ void ReadFilteringStats::MergeFrom(const ReadFilteringStats& other)
   //num_reads_removed_beverly_              += other.num_reads_removed_beverly_;
   num_reads_removed_quality_filt_         += other.num_reads_removed_quality_filt_;
   num_reads_removed_adapter_trim_         += other.num_reads_removed_adapter_trim_;
+  num_reads_removed_barcode_trim_         += other.num_reads_removed_barcode_trim_;
   num_reads_removed_tag_trim_             += other.num_reads_removed_tag_trim_;
   num_reads_removed_extra_trim_           += other.num_reads_removed_extra_trim_;
   num_reads_removed_quality_trim_         += other.num_reads_removed_quality_trim_;
@@ -410,7 +422,7 @@ void ReadFilteringStats::PrettyPrint (const string& table_header)
   table << setw(23) << "0" << setw(23) << -num_bases_removed_key_trim_ << endl;
 
   table << setw(25) << "Barcode trim:";
-  table << setw(23) << "0" << setw(23) << -num_bases_removed_barcode_trim_ << endl;
+  table << setw(23) << -num_reads_removed_barcode_trim_ << setw(23) << -num_bases_removed_barcode_trim_ << endl;
 
   table << setw(25) << "Tag trim:";
   table << setw(23) << -num_reads_removed_tag_trim_ << setw(23) << -num_bases_removed_tag_trim_ << endl;
@@ -488,6 +500,7 @@ void ReadFilteringStats::SaveToBasecallerJson(Json::Value &json, const string& c
   json["Filtering"]["ReadDetails"][class_name]["failed_keypass"]      = (Json::Int64)num_reads_removed_keypass_;
   json["Filtering"]["ReadDetails"][class_name]["high_residual"]       = (Json::Int64)num_reads_removed_residual_;
   json["Filtering"]["ReadDetails"][class_name]["adapter_trim"]        = (Json::Int64)num_reads_removed_adapter_trim_;
+  json["Filtering"]["ReadDetails"][class_name]["barcode_trim"]        = (Json::Int64)num_reads_removed_barcode_trim_;
   json["Filtering"]["ReadDetails"][class_name]["quality_trim"]        = (Json::Int64)num_reads_removed_quality_trim_;
   json["Filtering"]["ReadDetails"][class_name]["quality_filter"]      = (Json::Int64)num_reads_removed_quality_filt_;
   json["Filtering"]["ReadDetails"][class_name]["tag_trim"]            = (Json::Int64)num_reads_removed_tag_trim_;
@@ -498,8 +511,13 @@ void ReadFilteringStats::SaveToBasecallerJson(Json::Value &json, const string& c
   json["BeadSummary"][class_name]["polyclonal"]  = (Json::Int64)(num_reads_removed_bkgmodel_polyclonal_ + num_reads_removed_polyclonal_);
   json["BeadSummary"][class_name]["highPPF"]     = (Json::Int64)(num_reads_removed_bkgmodel_high_ppf_ + num_reads_removed_high_ppf_);
   json["BeadSummary"][class_name]["zero"]        = 0;
-  json["BeadSummary"][class_name]["short"]       = (Json::Int64)(num_reads_removed_short_ + num_reads_removed_adapter_trim_
-                                                        + num_reads_removed_quality_trim_ + num_reads_removed_tag_trim_ +num_reads_removed_extra_trim_);
+  json["BeadSummary"][class_name]["short"]       = (Json::Int64)(num_reads_removed_short_ +
+                                                                 num_reads_removed_adapter_trim_ +
+                                                                 num_reads_removed_barcode_trim_ +
+                                                                 num_reads_removed_quality_trim_ +
+                                                                 num_reads_removed_tag_trim_ +
+                                                                 num_reads_removed_extra_trim_);
+
   json["BeadSummary"][class_name]["badKey"]      = (Json::Int64)(num_reads_removed_bkgmodel_keypass_ + num_reads_removed_keypass_);
   json["BeadSummary"][class_name]["highRes"]     = (Json::Int64)(num_reads_removed_residual_ + num_reads_removed_quality_filt_);
   json["BeadSummary"][class_name]["valid"]       = (Json::Int64)num_reads_final_;
@@ -582,7 +600,6 @@ void BaseCallerFilters::PrintHelp()
   printf ("     --trim-barcodes           BOOL       trim barcodes and barcode adapters [on]\n");
   printf ("     --extra-trim-left         INT        Number of additional bases to remove from read start after prefix (key/barcode/tag) [0]\n");
   printf ("     --extra-trim-right        INT        Number of additional bases to remove from read end before suffix (tag/adapter) [0]\n");
-  printf ("     --save-extra-trim         BOOL       Save extra trimmed bases to BAM tags (left ZE, right YE) [false]\n");
   printf (" Adapter trimming (turn off by supplying cutoff 0):\n");
   printf ("     --trim-adapter-mode       INT        0=use simplified metric, 1=use standard metric [1]\n");
   printf ("     --trim-adapter            STRING     reverse complement of adapter sequence [ATCACCGACTGCCCATAGAGAGGCTGAGAC]\n");
@@ -647,10 +664,12 @@ BaseCallerFilters::BaseCallerFilters(OptArgs& opts, Json::Value &comments_json,
   trim_qual_offset_            = opts.GetFirstDouble       ('-', "trim-qual-offset",0.7);
   trim_qual_slope_             = opts.GetFirstDouble       ('-', "trim-qual-slope",0.005);
   trim_qual_quadr_             = opts.GetFirstDouble       ('-', "trim-qual-quadr",0.00);
+  // newly added for maxinfo trimming
+  trim_strictness_             = opts.GetFirstDouble       ('-', "trim-strictness",0.05);
+  trim_target_length_          = opts.GetFirstDouble       ('-', "trim-target-length",0.85);
 
   extra_trim_left_             = opts.GetFirstInt          ('-', "extra-trim-left", 0);
   extra_trim_right_            = opts.GetFirstInt          ('-', "extra-trim-right", 0);
-  save_extra_trim_             = opts.GetFirstBoolean      ('-', "save-extra-trim", true);
   trim_barcodes_               = opts.GetFirstBoolean      ('-', "trim-barcodes", true);
 
 
@@ -658,6 +677,7 @@ BaseCallerFilters::BaseCallerFilters(OptArgs& opts, Json::Value &comments_json,
   else if (trim_qual_mode_ == "sliding-window")  { trim_qual_mode_enum_ = kQvTrimWindowed; }
   else if (trim_qual_mode_ == "expected-errors") { trim_qual_mode_enum_ = kQvTrimExpectedErrors; }
   else if (trim_qual_mode_ == "all")             { trim_qual_mode_enum_ = kQvTrimAll; }
+  else if (trim_qual_mode_  == "max-information") { trim_qual_mode_enum_ = kQvTrimMaxInfo;}
   else {
    cerr << "BaseCaller Option Error: Unrecognized quality trimming mode: "<< trim_qual_mode_ <<". Aborting!" << endl;
    exit(EXIT_FAILURE);
@@ -940,6 +960,7 @@ void BaseCallerFilters::TrimPrefixTag(int read_index, int read_class, ProcessedR
     return;
   if (not TagTrimmer->HasTags(processed_read.read_group_index))  // Nothing to do
     return;
+  //
 
   const char* tag_start = NULL;
     if ((int)sequence.size() > processed_read.filter.n_bases_prefix)
@@ -968,26 +989,29 @@ void BaseCallerFilters::TrimPrefixTag(int read_index, int read_class, ProcessedR
 
 // ----------------------------------------------------------------------------
 // This function does all the BaseCaller accounting for 3' tag trimming
+// Tag is assumed to be the bases before 3' barcode and bead adapter
 
 void BaseCallerFilters::TrimSuffixTag(int read_index, int read_class, ProcessedRead &processed_read, const vector<char> & sequence, const MolecularTagTrimmer* TagTrimmer)
 {
-  if (processed_read.filter.is_filtered or processed_read.is_control_barcode or read_class != 0)
+  if (processed_read.filter.is_filtered or processed_read.is_control_barcode or read_class != 0){
     return;
-  if (not TagTrimmer->HasTags(processed_read.read_group_index)) // Nothing to do
+  }
+  if (not TagTrimmer->HasTags(processed_read.read_group_index)) {
+    // Nothing to do but propagate valid trimming point
+    processed_read.filter.n_bases_after_tag_trim = processed_read.filter.n_bases_after_barcode_trim;
     return;
-
-  //read_filtering_history.n_bases_after_adapter_trim
+  }
 
   const char* adapter_start_base = NULL;
-  if (processed_read.filter.n_bases_after_adapter_trim > 0 and
-      processed_read.filter.n_bases_after_adapter_trim < processed_read.filter.n_bases)
+  if (processed_read.filter.n_bases_after_barcode_trim > 0 and
+      processed_read.filter.n_bases_after_barcode_trim < processed_read.filter.n_bases)
   {
-    adapter_start_base = &sequence.at(processed_read.filter.n_bases_after_adapter_trim);
+    adapter_start_base = &sequence.at(processed_read.filter.n_bases_after_barcode_trim); // This needs to change
   }
 
   int n_bases_trimmed_tag = TagTrimmer->TrimSuffixTag(processed_read.read_group_index,
                                                       adapter_start_base,
-                                                      processed_read.filter.n_bases_after_adapter_trim-processed_read.filter.n_bases_prefix,
+                                                      processed_read.filter.n_bases_after_barcode_trim-processed_read.filter.n_bases_prefix,
                                                       processed_read.trimmed_tags);
 
   // Read filtering or trimming
@@ -1095,73 +1119,6 @@ void BaseCallerFilters::FilterHighResidual(int read_index, int read_class, ReadF
 }
 
 
-// ---------------------------------------------------------------------------- XXX
-/*
-void BaseCallerFilters::FilterBeverly(int read_index, int read_class, ReadFilteringHistory& filter_history, const vector<float>& scaled_residual,
-    const vector<int>& base_to_flow)
-{
-  if (filter_history.is_filtered)
-    return;
-
-  bool reject = false;
-  uint16_t clip_qual_right = filter_history.n_bases;
-
-  if (filter_beverly_enabled_ and read_class == 0) {    // What about random reads? What about TFs?
-
-    int num_onemers = 0;
-    int num_twomers = 0;
-    int num_extreme_onemers = 0;
-    int num_extreme_twomers = 0;
-    int max_trim_bases = 0;
-
-    for (int flow = 0, base = 0; flow < flow_order_.num_flows(); ++flow) {
-
-      int hp_length = 0;
-      while (base < filter_history.n_bases and base_to_flow[base] == flow) {
-        base++;
-        hp_length++;
-      }
-
-      if (hp_length == 1) {
-        num_onemers++;
-        if (scaled_residual[flow] <= -0.405f or scaled_residual[flow] >= 0.395f)
-          num_extreme_onemers++;
-      }
-
-      if (hp_length == 2) {
-        num_twomers++;
-        if (scaled_residual[flow] <= -0.405f or scaled_residual[flow] >= 0.395f)
-          num_extreme_twomers++;
-      }
-
-      if (num_extreme_onemers <= num_onemers * filter_beverly_filter_trim_ratio_.at(1))
-        max_trim_bases = base;
-    }
-
-    if ((num_extreme_onemers + num_extreme_twomers) > (num_onemers + num_twomers) * filter_beverly_filter_trim_ratio_.at(0)) {
-
-      int trim_length = max_trim_bases - filter_history.n_bases_prefix;
-      if (trim_length < trim_min_read_len_) { // Quality trimming led to filtering
-        reject = true;
-        clip_qual_right = 0;
-      } else
-        clip_qual_right = max_trim_bases;
-    }
-  }
-
-  if (clip_qual_right >= filter_history.n_bases_filtered)
-    return;
-
-  if(reject) {
-    filter_mask_[read_index] = kFilterBeverly;
-    filter_history.n_bases_after_beverly_trim = filter_history.n_bases_filtered = 0;
-    filter_history.is_filtered = true;
-
-  } else {
-    filter_history.n_bases_after_beverly_trim = filter_history.n_bases_filtered  = clip_qual_right;
-  }
-} //*/
-
 // ----------------------------------------------------------------------------
 // Filter entire reads based on their quality scores
 
@@ -1186,10 +1143,6 @@ void BaseCallerFilters::FilterQuality(int read_index, int read_class, ReadFilter
        break; // No need to waste more time!
      }
   }
-
-  // filter-v2.0 - trigger filter only if the expected errors at the end of the read are above the allowed threshold
-  //if (cumulative_expected_error > error_threshold)
-  //  is_filtered = true;
 
   if(is_filtered) {
     filter_mask_[read_index] = kFilterQuality;
@@ -1274,16 +1227,14 @@ void BaseCallerFilters::ValidateBaseStringVector(vector<string>& string_vector) 
 
 void BaseCallerFilters::TrimExtraLeft (int read_class, ProcessedRead& processed_read, const vector<char> & sequence)
 {
-  if (processed_read.filter.is_filtered) // Already filtered out?
-    return;
-  if (read_class != 0)  // Don't trim TFs
+  if (processed_read.filter.is_filtered or processed_read.is_control_barcode or read_class != 0)
     return;
   if (not trim_barcodes_) // Don't trim anything if barcodes aren't trimmed
     return;
 
   int new_prefix = min((processed_read.filter.n_bases_prefix + extra_trim_left_), processed_read.filter.n_bases_filtered);
   // Add BAM entry
-  if (save_extra_trim_ and new_prefix > processed_read.filter.n_bases_prefix){
+  if (new_prefix > processed_read.filter.n_bases_prefix){
     string left_trim(&(sequence.at(processed_read.filter.n_bases_prefix)), new_prefix - processed_read.filter.n_bases_prefix);
     processed_read.bam.AddTag("ZE", "Z", left_trim);
   }
@@ -1295,25 +1246,25 @@ void BaseCallerFilters::TrimExtraLeft (int read_class, ProcessedRead& processed_
 
 void BaseCallerFilters::TrimExtraRight (int read_index, int read_class, ProcessedRead& processed_read, const vector<char> & sequence)
 {
-  if (processed_read.filter.is_filtered) // Already filtered out
-    return;
-  if (read_class != 0)  // Don't trim TFs
+  if (processed_read.filter.is_filtered or processed_read.is_control_barcode or read_class != 0)
     return;
 
+
   // Only trim if adapter was found
-  if (processed_read.filter.n_bases_after_adapter_trim > 0 and
-      processed_read.filter.n_bases_after_adapter_trim < processed_read.filter.n_bases){
+  if (processed_read.filter.n_bases_after_tag_trim > 0 and
+      processed_read.filter.n_bases_after_tag_trim < processed_read.filter.n_bases){
 
     // Trim desired amount of suffix bases if possible
     int new_end = max(processed_read.filter.n_bases_prefix, processed_read.filter.n_bases_filtered-extra_trim_right_);
-    if (save_extra_trim_ and new_end < processed_read.filter.n_bases_filtered){
+    if (new_end < processed_read.filter.n_bases_filtered){
       string right_trim(&(sequence.at(new_end)), processed_read.filter.n_bases_filtered - new_end);
       processed_read.bam.AddTag("YE", "Z", right_trim);
     }
     processed_read.filter.n_bases_filtered = new_end;
   }
-  else
+  else {
     return;
+  }
 
   // All of suffix trimming goes into the adapter trimming filter category since it's conditional on adapter trimming
   if (processed_read.filter.n_bases_filtered - processed_read.filter.n_bases_prefix < trim_min_read_len_) {
@@ -1325,8 +1276,31 @@ void BaseCallerFilters::TrimExtraRight (int read_index, int read_class, Processe
     processed_read.filter.n_bases_after_extra_trim = processed_read.filter.n_bases_filtered;
 
     // update ZA tag: contains insert length, i.e., length of query sequence before quality trimming
-    // We require that extra trimming right is done after adapter trimming and suffix tag trimming xxx
+    // We require that extra trimming right is done after adapter trimming and suffix tag trimming
     processed_read.bam.EditTag("ZA", "i", max(processed_read.filter.n_bases_filtered - processed_read.filter.n_bases_prefix, 0));
+  }
+}
+
+// ----------------------------------------------------------------------------
+
+void BaseCallerFilters::UpdateFilterStatus(int read_index, ReadFilteringHistory& filter_history)
+{
+  if (filter_history.is_filtered)
+    return;
+
+  int read_length = filter_history.n_bases_filtered - filter_history.n_bases_prefix;
+  if(read_length < trim_min_read_len_) {
+    filter_history.is_filtered = true;
+    filter_history.n_bases_filtered = 0;
+
+    // 3' Adapter trimming
+    // 3' Barcode trimming
+    if (filter_history.n_bases_after_barcode_trim >= 0) {
+      filter_mask_[read_index] = kFilterShortBarcode;
+      filter_history.n_bases_after_barcode_trim = 0;
+    }
+    // Tag trimming
+    // Extra trimming
   }
 }
 
@@ -1535,7 +1509,7 @@ void BaseCallerFilters::TrimAdapter(int read_index, int read_class, ProcessedRea
   if (fabs(best_metric - second_best_metric) < trim_adapter_separation_)
     best_start_flow = -1;
   if (best_start_flow == -1) {   // No suitable match
-    processed_read.filter.adapter_type = trim_adapter_.size();
+    processed_read.filter.adapter_type = -1;
     return;
   }
 
@@ -1581,45 +1555,163 @@ void BaseCallerFilters::TrimAdapter(int read_index, int read_class, ProcessedRea
   }
 }
 
+// ----------------------------------------------------------------------------
+void BaseCallerFilters::TransferQuality(int read_index, int read_class, ReadFilteringHistory& filter_history,
+		const vector<uint8_t>& quality_flow, vector<uint8_t>& quality,  const vector<int>& base_to_flow, const vector< vector<float> > errD_table)
+{
+	// Exception were we don't filter
+	if (filter_history.is_filtered) // Already filtered out?
+		return;
+	if (read_class != 0)
+		return;
+	int n_base = filter_history.n_bases;
+	int n_flow = quality_flow.size();
+	int hp = 0;
+	quality.clear();
+	if ((int)base_to_flow.size() != n_base){
+		printf("quality_flow.size() - %d \n", n_flow);
+		printf("base_to_flow.size() - %d \n", (int)base_to_flow.size());
+	}
+	int i = 0;
+	int j = i + 1;
+	while(j <= (int)base_to_flow.size()){
+		int flow = base_to_flow[i];
+		while(j < (int)base_to_flow.size() && flow == base_to_flow[j])
+			j++;
+		hp = j - i;
+		for (int k = i; k < j - 1; k++){ //hp >=2
+			float err = 0.0;
+			if ((hp - 1)< int(errD_table.size()) && k - i < int(errD_table[0].size()))
+				float err = errD_table[hp - 1][k - i];
+			if(err > 0.0001)
+				quality.push_back(int( -10 * log10(err)));
+			else
+				quality.push_back(40);
+		}
+		// push to the last base in the flow
+		quality.push_back(quality_flow.at(flow));
+		// ready for the next flow
+		i = j;
+		j = i + 1;
+	}
 
+	//printf("///baseq"); // , read_index, quality_base.size(), flow_to_base.size()
+	/*for(unsigned int i=0; i < quality.size(); ++i)
+		std::cout << static_cast<unsigned int>(quality[i]) << ' ' <<std::flush;
+	std::cout << endl;*/
+	/*//printf("filter_history.n_bases - %d \n", quality.size);
+	// DEBUGGING
+	printf("flowq");
+	for(unsigned int i=0; i < quality_flow.size(); ++i)
+		std::cout << static_cast<unsigned int>(quality_flow[i]) << ' ' <<std::flush;
+	std::cout << endl;
+	printf("filter_history.n_bases - %d \n", filter_history.n_bases);*/
+}
 // ----------------------------------------------------------------------------
 
-void BaseCallerFilters::TrimQuality(int read_index, int read_class, ReadFilteringHistory& filter_history, const vector<uint8_t>& quality)
+void BaseCallerFilters::TrimQuality(int read_index, int read_class, ReadFilteringHistory& filter_history,
+		const vector<uint8_t>& quality, bool use_flow, const vector<int>& flow_to_base, const vector<int>& base_to_flow)
 {
-  // Exception were we don't filter
-  if (filter_history.is_filtered) // Already filtered out?
-	return;
-  if (read_class != 0)  // Hardcoded: Don't trim TFs
-    return;
+	int last_flow = base_to_flow.back();
+	int max_eligible_flow = flow_order_.num_flows();
+	max_eligible_flow = min(max_eligible_flow, last_flow);
+	// Exception were we don't filter
+	if (filter_history.is_filtered) // Already filtered out?
+		return;
+	if (read_class != 0)  // Hardcoded: Don't trim TFs
+		return;
 
-  int temp_clip_qual_right, clip_qual_right;
+	int temp_clip_qual_right, clip_qual_right;
+	vector<uint8_t>   quality_hp_flow(last_flow);
+	vector<int>   cut2base(last_flow);
+	if(use_flow){ //flow space
+		int j = 0;
+		int last_hp = 0;
+		for(int i=0; i < last_flow and i < (int)flow_to_base.size(); i++){
+			if(flow_to_base.at(i) >= 0){
+				if(j < (int)quality_hp_flow.size())
+					quality_hp_flow.at(j) = quality.at(i);
+				cut2base.at(j) = flow_to_base.at(i);
+				j++;
+			}
+		}
+		last_hp = j;
+		quality_hp_flow.resize(last_hp);
+		switch (trim_qual_mode_enum_) {
+		case kQvTrimOff : return;
+		case kQvTrimWindowed :
+			clip_qual_right = TrimQuality_Windowed(read_index, filter_history, quality_hp_flow);
+			break;
+		case kQvTrimMaxInfo :
+			clip_qual_right = TrimMaxInfo(read_index, filter_history, quality, max_eligible_flow);
+			break;
 
-  switch (trim_qual_mode_enum_) {
-    case kQvTrimOff : return;
-    case kQvTrimWindowed :
-      clip_qual_right = TrimQuality_Windowed(read_index, filter_history, quality);
-      break;
-    case kQvTrimExpectedErrors :
-      clip_qual_right = TrimQuality_ExpectedErrors(read_index, filter_history, quality);
-      break;
-    default :
-      temp_clip_qual_right = TrimQuality_Windowed(read_index, filter_history, quality);
-      clip_qual_right = min(temp_clip_qual_right, TrimQuality_ExpectedErrors(read_index, filter_history, quality));
-  };
+		default :
+			clip_qual_right = TrimQuality_Windowed(read_index, filter_history, quality_hp_flow);
+		}
+		// Actual trimming here
+		if(clip_qual_right < last_hp)
+			clip_qual_right = cut2base.at(clip_qual_right);
+		else
+			clip_qual_right = filter_history.n_bases;
+	}else{  // base space
+		switch (trim_qual_mode_enum_) {
+		case kQvTrimOff : return;
+		case kQvTrimWindowed :
+			clip_qual_right = TrimQuality_Windowed(read_index, filter_history, quality);
+			break;
+		case kQvTrimExpectedErrors :
+			clip_qual_right = TrimQuality_ExpectedErrors(read_index, filter_history, quality);
+			break;
 
-  // Store trimming results if necessary and do base accounting
-  if (clip_qual_right >= filter_history.n_bases_filtered)
-     return;
+		default :
+			temp_clip_qual_right = TrimQuality_Windowed(read_index, filter_history, quality);
+			clip_qual_right = min(temp_clip_qual_right, TrimQuality_ExpectedErrors(read_index, filter_history, quality));
+		}
+	};
 
-  int trim_length = clip_qual_right - filter_history.n_bases_prefix;
+	// Store trimming results if necessary and do base accounting
+	/*if(use_flow){
+		// flow space trimming
+		int i = clip_qual_right;
+		while(i > 0 && flow_to_base.at(i - 1) < 0){
+			i--;
+		}
+		int clip_qual_right_base = i > 1 ? flow_to_base.at(i - 1): 0;
+		clip_qual_right = clip_qual_right_base;
+		//debugging
+		cout << "base2flow-";
+		for(unsigned int i = 0; i < base_to_flow.size(); ++i){
+			cout << base_to_flow[i] << " ";
+		}
+		cout << endl;
+		cout << "flow2base-";
+		for(unsigned int i = 0; i < flow_to_base.size(); ++i){
+			cout << flow_to_base[i] << " ";
+		}
+		cout << endl;
+		cout << "quality_filtered-";
+		for(unsigned int i = 0; i < quality_hp_flow.size(); ++i){
+			cout << static_cast<unsigned int>(quality_hp_flow.at(i)) << " ";
+		}
+		cout << endl;
+		cout << "cut-at-base-" <<clip_qual_right << " n_bases-"<< filter_history.n_bases << " n_bases_prefix-"<<filter_history.n_bases_prefix;
+		cout << endl;
+	}*/
 
-  if (trim_length < trim_min_read_len_) { // Quality trimming led to filtering
-    filter_mask_[read_index] = kFilterShortQualityTrim;
-    filter_history.n_bases_after_quality_trim = filter_history.n_bases_filtered = 0;
-    filter_history.is_filtered = true;
-  } else {
-     filter_history.n_bases_after_quality_trim = filter_history.n_bases_filtered = clip_qual_right;
-  }
+	if (clip_qual_right >= filter_history.n_bases_filtered)
+		return;
+
+	int trim_length = clip_qual_right - filter_history.n_bases_prefix;
+	if (trim_length < trim_min_read_len_) { // Quality trimming led to filtering
+		filter_mask_[read_index] = kFilterShortQualityTrim;
+		filter_history.n_bases_after_quality_trim = 0;
+		filter_history.n_bases_filtered = 0;
+		filter_history.is_filtered = true;
+	} else {
+		filter_history.n_bases_after_quality_trim = clip_qual_right;
+		filter_history.n_bases_filtered = clip_qual_right;
+	}
 }
 
 
@@ -1627,31 +1719,31 @@ void BaseCallerFilters::TrimQuality(int read_index, int read_class, ReadFilterin
 
 int BaseCallerFilters::TrimQuality_Windowed(int read_index, ReadFilteringHistory& filter_history, const vector<uint8_t>& quality)
 {
-  if(trim_qual_cutoff_ >= 100.0 or trim_qual_cutoff_ == 0.0)   // 100.0 or more means disabled
-    return filter_history.n_bases;
+	int trim_qual_cutoff = filter_history.n_bases;
+	if(trim_qual_cutoff_ >= 100.0 or trim_qual_cutoff_ == 0.0)   // 100.0 or more means disabled
+		return filter_history.n_bases;
+	int window_start = 0;
+	int window_end = 0;
+	int minimum_sum, window_sum = 0;
 
-  int window_start = 0;
-  int window_end = 0;
-  int minimum_sum, window_sum = 0;
+	// Step 1: Accumulate over the initial window
+	while (window_end < trim_qual_window_size_ and window_end < trim_qual_cutoff) //filter_history.n_bases
+		window_sum += quality[window_end++];
+	minimum_sum = window_end * trim_qual_cutoff_;
 
-  // Step 1: Accumulate over the initial window
-  while (window_end < trim_qual_window_size_ and window_end < filter_history.n_bases)
-    window_sum += quality[window_end++];
-  minimum_sum = window_end * trim_qual_cutoff_;
+	// Step 2: Keep sliding as long as average q-score exceeds the threshold
+	int clip_qual_right = window_sum >= minimum_sum ? (window_end + window_start) / 2 : 0;
+	while (window_sum >= minimum_sum and window_end < trim_qual_cutoff) {//filter_history.n_bases
+		window_sum += quality[window_end++];
+		window_sum -= quality[window_start++];
+		clip_qual_right++;
+	}
 
-  // Step 2: Keep sliding as long as average q-score exceeds the threshold
-  int clip_qual_right = window_sum >= minimum_sum ? (window_end + window_start) / 2 : 0;
-  while (window_sum >= minimum_sum and window_end < filter_history.n_bases) {
-    window_sum += quality[window_end++];
-    window_sum -= quality[window_start++];
-    clip_qual_right++;
-  }
+	// We reached the end of the read - nothing to trim here, besides if extra trim is explicitly set.
+	if (window_end == trim_qual_cutoff)
+		clip_qual_right = trim_qual_cutoff;
 
-  // We reached the end of the read - nothing to trim here, besides if extra trim is explicitly set.
-  if (window_end == filter_history.n_bases)
-    clip_qual_right = filter_history.n_bases;
-
-  return clip_qual_right;
+	return clip_qual_right;
 }
 
 
@@ -1661,10 +1753,11 @@ int BaseCallerFilters::TrimQuality_ExpectedErrors(int read_index, ReadFilteringH
 {
   //for every base, compute cumulative expected errors and compare to threshold
   int clip_qual_right = 0; // assume all bad until proven otherwise
+  int trim_qual_cutoff = quality.size(); //filter_history.n_bases;
   double error_threshold = trim_qual_offset_;
   double cumulative_expected_error = 0.0;
 
-  for (int ibase=0; ibase<filter_history.n_bases; ibase++){
+  for (int ibase = 0; ibase < trim_qual_cutoff; ibase++){
      error_threshold += trim_qual_slope_;
      error_threshold += trim_qual_quadr_ * ibase;  // increase to handle rising error rate towards end of read
      cumulative_expected_error += exp(-quality[ibase]*0.2302585); // log(10)/10
@@ -1676,10 +1769,37 @@ int BaseCallerFilters::TrimQuality_ExpectedErrors(int read_index, ReadFilteringH
   clip_qual_right +=1; // clip at one base beyond?
 
   // keep the dynamics of the old school clipper: To be removed in the future!
-  if (clip_qual_right == filter_history.n_bases)
-    clip_qual_right = filter_history.n_bases;
+  if (clip_qual_right == trim_qual_cutoff)
+    clip_qual_right = trim_qual_cutoff;
 
   return clip_qual_right;
+}
+
+int BaseCallerFilters::TrimMaxInfo(int read_index, ReadFilteringHistory& filter_history, const vector<uint8_t>& quality,
+		int max_flow)
+{
+	int clip_qual_right = max_flow;
+	float s = trim_strictness_;
+	float len_t = trim_target_length_;
+	if(trim_qual_cutoff_ >= 100.0 or trim_qual_cutoff_ == 0.0)   // 100.0 or more means disabled
+		return filter_history.n_bases;
+	//cout<<trim_qual_cutoff << " " <<filter_history.n_bases << " "<< trim_target_length_;
+	float score_lt= 0.0, score_cov = 0.0, score_err = 0.0, score = 0.0,max_score = 0.0;
+
+	for(int i = 0; i < max_flow; i++){
+		score_lt = 1/(1 + exp( (int)(len_t * max_flow) - i - 1));
+		score_cov = pow (i + 1,  1 - s);
+		if(i == 0)
+			score_err = 1 - pow(10, - ((float)quality[i] / 10.0));
+		else
+			score_err = score_err * (1 - pow(10, - ((float)quality[i] / 10.0)));
+		score = score_lt * score_cov * pow(score_err, s);
+		if(max_score < score){
+			max_score = score;
+			clip_qual_right = i;
+		}
+	}
+	return clip_qual_right;
 }
 
 // ----------------------------------------------------------------------------------

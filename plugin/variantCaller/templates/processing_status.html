@@ -29,15 +29,16 @@
 </head>
 <title>Torrent Variant Caller Report</title>
 <body>
-
-<strong>Plugin is in progress: {{status.barcodes_carried_out}} out of {{status.num_barcodes}} barcodes have been carried out ...</strong>
+<div class="alert alert-info">
+	<strong>Plugin is in progress:</strong> {{status.barcodes_carried_out}} out of {{status.num_barcodes}} barcodes have been carried out ...
+</div>
 <div class="container-fluid">
 	<table style="width:auto">
 	    <tr><td>Total number of barcodes: </td>            <td>{{status.num_barcodes}}</td></tr>
 	    <tr><td>Number of barcodes filtered out: </td>     <td>{{status.filtered_barcodes}}</td></tr>
         <tr><td>Number of barcodes processed: </td>        <td>{{status.barcodes_processed}}</td></tr>
         <tr><td>Number of barcodes in the queue: </td>     <td>{{status.queued_barcodes}}</td></tr>
-        <tr><td>Output directory: </td>                    <td>{{output_dir}}</td></tr>
+  	    <tr><td>Output directory:</td>      <td><a href="../../../../../report/{{runinfo_pk}}/metal/plugin_out/{{output_dir}}">{{output_dir}}</a>
 	</table>
 	
 <script type="text/javascript">
@@ -71,7 +72,8 @@
       	barcode_json['barcode_details'] = "<a target='_parent' href='{{barcode.summary.barcode_details}}' class='help'><span title='Click to view the detailed report for barcode {{barcode.name}}'>{{barcode.name}}</span><a>";	  	  
 	    barcode_json['variants'] = '{{barcode.summary.variants_total.variants}}';
 	    barcode_json['exports'] = '<a class="btn" href="{{barcode.summary.variants_vcf_gz_link}}">VCF.GZ</a> &nbsp <a class="btn" href="{{barcode.summary.variants_tbi_link}}">VCF.GZ.TBI</a> &nbsp';
-        {% if options.library_type != "tagseq" %}
+        {% if has_umt %}
+        {% else %}
 	      barcode_json['exports'] += '<a class="btn" href="{{barcode.summary.genome_vcf_gz_link}}">gVCF.GZ</a> &nbsp';
 	      barcode_json['exports'] += '<a class="btn" href="{{barcode.summary.genome_tbi_link}}">gVCF.GZ.TBI</a> &nbsp';
         {% endif %}

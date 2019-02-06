@@ -1,10 +1,12 @@
 # Copyright (C) 2013 Ion Torrent Systems, Inc. All Rights Reserved
+import apt
 import os
 from django.db.models.aggregates import Count, Max
 from django.core.cache import cache
 from tastypie.api import Api
 import StringIO
 import csv
+from iondb.utils.makePDF import write_report_pdf, REPORT_PDF
 import uuid
 import json
 from tastypie.utils.formatting import format_datetime
@@ -56,11 +58,11 @@ from iondb.rundb.barcodedata import BarcodeSampleInfo
 from iondb.rundb import forms
 import iondb.rundb.admin
 from iondb.rundb.plan import plan_validator
+from iondb.rundb.plan.chef_flexible_workflow_validator import ChefFlexibleWorkflowValidator
 from iondb.rundb.sample import sample_validator
 from iondb.rundb.plan.plan_share import prepare_for_copy, transfer_plan, update_transferred_plan
 from iondb.rundb.configure.genomes import get_references
 
-from ion.utils.TSversion import findVersions
 # from iondb.plugins import runner
 from ion.plugin import remote, Feature
 from ion.plugin.constants import RunLevel, RunType, runLevelsList
@@ -480,7 +482,7 @@ class ProjectResultsResource(ModelResource):
 class ResultsResource(BaseMetadataResource):
 
     def prepend_urls(self):
-        urls = [
+        return [
             url(r"^(?P<resource_name>%s)/(?P<pk>\w[\w/-]*)/plugin%s$" % (self._meta.resource_name, trailing_slash()),
                self.wrap_view('dispatch_plugin'), name="api_dispatch_plugin"),
             url(r"^(?P<resource_name>%s)/(?P<pk>\w[\w/-]*)/pluginresults%s$" % (self._meta.resource_name, trailing_slash()),
@@ -498,10 +500,28 @@ class ResultsResource(BaseMetadataResource):
             url(r"^(?P<resource_name>%s)/(?P<pk>\w[\w/-]*)/representative%s$" % (self._meta.resource_name, trailing_slash()),
                self.wrap_view('post_representative'), name="api_post_representative"),
             url(r"^(?P<resource_name>%s)/(?P<pk>\w[\w/-]*)/scan_for_orphaned_plugin_results%s$" % (self._meta.resource_name, trailing_slash()),
-                self.wrap_view('dispatch_scan_for_orphaned_plugin_results'), name='api_scan_for_orphaned_plugin_results')
+                self.wrap_view('dispatch_scan_for_orphaned_plugin_results'), name='api_scan_for_orphaned_plugin_results'),
+            url(r"^(?P<resource_name>%s)/(?P<pk>\w[\w/-]*)/report%s$" % (self._meta.resource_name, trailing_slash()),
+                self.wrap_view('dispatch_report'), name='api_result_report'),
         ]
 
-        return urls
+    def dispatch_report(self, request, **kwargs):
+        """Wrapper for all report methods"""
+        return self.dispatch('report', request, **kwargs)
+
+    def get_report(self, request, **kwargs):
+        """get a report pdf"""
+        bundle = self.build_bundle(request=request)
+        result = self.cached_obj_get(bundle, **self.remove_api_resource_names(kwargs))
+        pdf_path = os.path.join(result.get_report_dir(), REPORT_PDF)
+        if not os.path.exists(pdf_path):
+            write_report_pdf(result.pk)
+
+        response = HttpResponse(content_type='application/pdf')
+        with open(pdf_path, 'rb') as pdf_handle:
+            response.write(pdf_handle.read())
+
+        return response
 
     def dispatch_scan_for_orphaned_plugin_results(self, request, **kwargs):
         return self.dispatch('scan_for_orphaned_plugin_results', request, **kwargs)
@@ -874,7 +894,8 @@ class ResultsResource(BaseMetadataResource):
                 'show': show_plugins.get(pr.plugin.name, True),
                 'can_terminate': pr.can_terminate(),
                 'plugin_result_jobs': pr.plugin_result_jobs,
-                'State': pr.state()
+                'State': pr.state(),
+                'validation_errors': pr.validation_errors.get('validation_errors', list())
             }
             pluginArray.append(data)
 
@@ -916,6 +937,7 @@ class ResultsResource(BaseMetadataResource):
                     'show': show_plugins.get(name, True),
                     'can_terminate': pr.can_terminate(),
                     'plugin_result_jobs': pr.plugin_result_jobs,
+                    'validation_errors': pr.validation_errors.get('validation_errors', list())
                 }
                 logger.info("Plugin folder with no db record: %s v%s at '%s'", name, version, outputpath)
                 pluginArray.append(data)
@@ -1099,6 +1121,7 @@ class ResultsResource(BaseMetadataResource):
         barcodesampleinfo_allowed_methods = ['get']
         metadata_allowed_methods = ['get', 'post']
         scan_for_orphaned_plugin_results_allowed_methods = ['get']
+        report_allowed_methods = ['get']
 
 
 class ExperimentValidation(Validation):
@@ -1131,7 +1154,15 @@ class ExperimentValidation(Validation):
 
         if not is_endTime_after_startTime(startTime, endTime):
             errors[key_timeEnd] = "Attribute " + key_timeEnd + " cannot be earlier than the start time"
-            
+
+        cfw_validator = ChefFlexibleWorkflowValidator()
+        keys = ["chefReagentsSerialNum", "chefSolutionsSerialNum"]
+        for key in keys:
+            value = bundle.data.get(key, "")
+            errMsg = cfw_validator.validate_GS1_standards(value)
+            if errMsg:
+                errors[key] = errMsg
+
         if errors:
             logger.error("Experiment has validation errors. Errors=%s" % (errors))
             raise ValidationError(json.dumps(errors))
@@ -1874,6 +1905,8 @@ class EmailAddressResource(ModelResource):
 
 class RigResource(ModelResource):
 
+    location = fields.ToOneField(LocationResource, 'location', full=True, null=True, blank=True)
+
     def prepend_urls(self):
         urls = [url(
             r"^(?P<resource_name>%s)/(?P<pk>\w[\w/-]*)/status%s$" % (
@@ -1941,7 +1974,6 @@ class RigResource(ModelResource):
 
         return self.create_response(request, config)
 
-    location = fields.ToOneField(LocationResource, 'location', full=True)
 
     class Meta:
         queryset = models.Rig.objects.all()
@@ -1994,8 +2026,12 @@ class PluginResource(ModelResource):
             url(r"^(?P<resource_name>%s)/(?P<pk>\w[\w/-]*)/info%s$" % (rn, ts), self.wrap_view('dispatch_info'), name="api_dispatch_info"),
             url(r"^(?P<resource_name>%s)/show%s$" % (rn, ts), self.wrap_view('dispatch_show'), name="api_plugins_show"),
             url(r"^(?P<resource_name>%s)/lineage%s$" % (rn, ts), self.wrap_view('dispatch_lineage'), name="api_dispatch_lineage"),
-            url(r"^(?P<resource_name>%s)/rescan%s$" % (rn, ts), self.wrap_view('dispatch_rescan'), name="api_dispatch_rescan")
+            url(r"^(?P<resource_name>%s)/rescan%s$" % (rn, ts), self.wrap_view('dispatch_rescan'), name="api_dispatch_rescan"),
+            url(r"^(?P<resource_name>%s)/(?P<pk>\w[\w/-]*)/validate%s$" % (rn, ts), self.wrap_view('dispatch_validate'), name="api_dispatch_validate")
         ]
+
+    def dispatch_validate(self, request, **kwargs):
+        return self.dispatch('validate', request, **kwargs)
 
     def dispatch_type(self, request, **kwargs):
         return self.dispatch('type', request, **kwargs)
@@ -2017,6 +2053,20 @@ class PluginResource(ModelResource):
 
     def dispatch_show(self, request, **kwargs):
         return self.dispatch('show', request, **kwargs)
+
+    def post_validate(self, request, **kwargs):
+        """This will create an instance of the plugin and call the validate method on it"""
+        plugin = models.Plugin.objects.get(pk=kwargs['pk'])
+        file_path, file_extension = os.path.splitext(plugin.pluginscript)
+        if file_extension != '.py':
+            return HttpApplicationError('Cannot validate a plugin without a plugin class.')
+
+        data = request.POST.dict()
+        # do the execution
+        issues = Plugin.validate(kwargs['pk'], data.get('configuration', dict()), data.get('run_mode', 'Manual'))
+
+        # return a list of all of the information
+        return self.create_response(request, {'issues': issues})
 
     def dispatch_install_to_version(self, request, **kwargs):
         """
@@ -2280,6 +2330,8 @@ class PluginResource(ModelResource):
         :return:
         """
 
+        Plugin.update_apt_cache()
+
         if 'selected' in request.GET:
             selected = request.GET['selected'].lower() == "true"
             pluginNames = models.Plugin.objects.filter(selected=selected)
@@ -2320,7 +2372,7 @@ class PluginResource(ModelResource):
                     continue
 
                 pluginDict['CurrentVersion'] = 'None'
-                pluginDict['date'] = 'NA'
+                pluginDict['date'] = None
 
             pluginDict['isSupported'] = templatePlugin.isSupported
             pluginDict['availableVersions'] = templatePlugin.availableVersions
@@ -2346,7 +2398,7 @@ class PluginResource(ModelResource):
         ordering = field_list
         filtering = field_dict(field_list + ['isConfig'])
 
-        authentication = IonAuthentication()
+        authentication = IonAuthentication(ion_mesh_access=True)
         authorization = DjangoAuthorization()
         type_allowed_methods = ['get', ]
         install_allowed_methods = ['post', ]
@@ -2358,6 +2410,7 @@ class PluginResource(ModelResource):
         upgrade_allowed_methods = ['post']
         install_to_version_allowed_methods = ['post']
         lineage_allowed_methods = ['get']
+        validate_allowed_methods = ['post']
 
 
 class PluginResultResource(ModelResource):
@@ -2608,13 +2661,13 @@ class PlannedExperimentValidation(Validation):
         barcodedSampleValue = bundle.data.get("barcodedSamples")
 
         msg = "sample(for non barcoded plan) or barcodedSamples(for barcoded plan) must be provided"
-        if not sampleValue and not barcodedSampleValue and not isTemplate:
+        if not sampleValue and not barcodedSampleValue and not isTemplate and isNewPlan:
             errors["sample"] = "Missing sample input data. Either %s" % msg
         if sampleValue and barcodedSampleValue:
             errors["sample"] = "Barcoded sample data exists. Only %s but not both" % msg
             errors["barcodedSamples"] = "Non barcoded sample data exists. Only %s but not both." % msg
         if "sample" not in errors and sampleValue:
-            err = plan_validator.validate_sample_name(value, isTemplate = isTemplate, barcodeId = bundle.data.get("barcodeId"))
+            err = plan_validator.validate_sample_name(sampleValue, isTemplate = isTemplate, barcodeId = bundle.data.get("barcodeId"))
             if err:
                 errors["sample"] = err
 
@@ -2806,7 +2859,15 @@ class PlannedExperimentValidation(Validation):
             if key == "barcodeId":
                 err = plan_validator.validate_barcode_kit_name(value)
             if key == "sequencekitname":
-                err, key_specific_warning = plan_validator.validate_sequencing_kit_name(value, isNewPlan=isNewPlan)
+                err, key_specific_warning = plan_validator.validate_optional_kit_name(value,
+                                                                                      kitType = ["SequencingKit"],
+                                                                                      displayedName="Sequencing Kit",
+                                                                                      isNewPlan=isNewPlan)
+            if key == "librarykitname":
+                err, key_specific_warning = plan_validator.validate_optional_kit_name(value,
+                                                                                      kitType = ["LibraryKit", "LibraryPrepKit"],
+                                                                                      displayedName="Library Kit",
+                                                                                      isNewPlan=isNewPlan)
             if key == "runType":
                 err = plan_validator.validate_runType(value)
             if key == "applicationGroupDisplayedName":
@@ -2815,8 +2876,8 @@ class PlannedExperimentValidation(Validation):
                 err = plan_validator.validate_sample_grouping(value)
             if key == "libraryReadLength":
                 err = plan_validator.validate_libraryReadLength(value)
-            if key == "templatingSize":
-                err = plan_validator.validate_templatingSize(value)
+            if key == "templatingSize" and value:
+                key_specific_warning = "This field is deprecated, use samplePrepProtocol (pcr200bp, pcr400bp) instead."
             if key == "samplePrepProtocol":
                 err = bundle.data.get("errorInSamplePrepProtocol","")
             if key == "bedfile":
@@ -2836,7 +2897,22 @@ class PlannedExperimentValidation(Validation):
                 if not err:
                     err = plan_validator.validate_reference_short_name(value)
             if key == "mixedTypeRNA_reference":
-                err = plan_validator.validate_fusions_reference(value, runType, applicationGroupName)
+                displayedName = "RNA Reference" if runType == "MIXED" else "Fusions Reference"
+                err = plan_validator.validate_fusions_reference(value, runType, applicationGroupName, displayedName)
+            if key == "mixedTypeRNA_targetRegionBedFile":
+                if "mixedTypeRNA_reference" in bundle.data:
+                    reference = bundle.data.get("mixedTypeRNA_reference")
+                else:
+                    reference = bundle.obj.latestEAS.mixedTypeRNA_reference if bundle.obj.latestEAS else ""
+                if reference and not isTemplate:
+                    displayedName = "RNA Target Regions BED File" if runType == "MIXED" else "Fusions Target Regions BED File"
+                    err = plan_validator.validate_targetRegionBedFile_for_runType(
+                        value, runType, reference, "", applicationGroupName, displayedName, isPrimaryTargetRegion = False)
+                if value and not reference:
+                    err = "Bed file(%s) exists but No Reference" % (value)
+
+            if key == 'selectedPlugins':
+                err = " | ".join(plan_validator.validate_plugin_configurations(bundle.data.get(key)))
 
             if err:
                 errors[key] = err
@@ -3018,6 +3094,7 @@ class PlannedExperimentResource(PlannedExperimentDbResource):
     bedfile = fields.CharField(blank=True, default='')
     chipType = fields.CharField(default='')
     chipBarcode = fields.CharField(default='')
+    endBarcodeKitName = fields.CharField(blank=True, null=True, default='')
     flows = fields.IntegerField(default=0)
     forward3primeadapter = fields.CharField(blank=True, null=True, default='')
     library = fields.CharField(blank=True, null=True, default='')
@@ -3055,6 +3132,10 @@ class PlannedExperimentResource(PlannedExperimentDbResource):
 
     earlyDatFileDeletion = fields.BooleanField(readonly=True, default=False)
 
+    mixedTypeRNA_reference = fields.CharField(blank=True, null=True, default='')
+    mixedTypeRNA_targetRegionBedFile = fields.CharField(blank=True, default='')
+    mixedTypeRNA_hotSpotRegionBedFile = fields.CharField(blank=True, default='')
+    
     def prepend_urls(self):
         return [
             url(r"^(?P<resource_name>%s)/(?P<pk>\w[\w/-]*)/transfer%s$" % (self._meta.resource_name, trailing_slash()),
@@ -3164,6 +3245,7 @@ class PlannedExperimentResource(PlannedExperimentDbResource):
             bundle.data['barcodedSamples'] = latest_eas.barcodedSamples if latest_eas else ""
             bundle.data['barcodeId'] = latest_eas.barcodeKitName if latest_eas else ""
             bundle.data['bedfile'] = latest_eas.targetRegionBedFile if latest_eas else ""
+            bundle.data['endBarcodeKitName'] = latest_eas.endBarcodeKitName if latest_eas else ""
             bundle.data['forward3primeadapter'] = latest_eas.threePrimeAdapter if latest_eas else ""
             bundle.data['library'] = latest_eas.reference if latest_eas else ""
             bundle.data['libraryKey'] = latest_eas.libraryKey if latest_eas else ""
@@ -3175,6 +3257,10 @@ class PlannedExperimentResource(PlannedExperimentDbResource):
                 'base_recalibration_mode'] = latest_eas.base_recalibration_mode if latest_eas else "no_recal"
             bundle.data['realign'] = latest_eas.realign if latest_eas else False
             bundle.data['sseBedFile'] = latest_eas.sseBedFile if latest_eas else ""
+
+            bundle.data['mixedTypeRNA_reference'] = latest_eas.mixedTypeRNA_reference if latest_eas else ""
+            bundle.data['mixedTypeRNA_targetRegionBedFile'] = latest_eas.mixedTypeRNA_targetRegionBedFile if latest_eas else ""
+            bundle.data['mixedTypeRNA_hotSpotRegionBedFile'] = latest_eas.mixedTypeRNA_hotSpotRegionBedFile if latest_eas else ""
 
             bundle.data['beadfindargs'] = latest_eas.beadfindargs if latest_eas else ""
             bundle.data['thumbnailbeadfindargs'] = latest_eas.thumbnailbeadfindargs if latest_eas else ""
@@ -3249,6 +3335,7 @@ class PlannedExperimentResource(PlannedExperimentDbResource):
         bundle.data['sampleGroupingName'] = sampleGrouping.displayedName if sampleGrouping else ""
 
         # IonChef parameters from Experiment
+
         if experiment.chefInstrumentName:
             try:
                 chefFields = [f.name for f in experiment._meta.fields if f.name.startswith('chef')]
@@ -3291,6 +3378,28 @@ class PlannedExperimentResource(PlannedExperimentDbResource):
                             "api.PlannedExperiment.hydrate_barcodedSamples() -  INVALID v[barcodes] - NOT a list!!! v[barcodes]=%s" % (v['barcodes']))
                         valid = False
 
+                    if "endBarcodes" in v and isinstance(v['endBarcodes'], list):
+                        for bc in v['endBarcodes']:
+                            if not isinstance(bc, basestring):
+                                logger.debug(
+                                    "api.PlannedExperiment.hydrate_barcodedSamples() - INVALID bc - NOT an str - bc=%s" % (bc))
+                                valid = False
+                    else:
+                        if "endBarcodes" in v:
+                            logger.debug("api.PlannedExperiment.hydrate_barcodedSamples() -  INVALID v[endBarcodes] - NOT a list!!! v[endBarcodes]=%s" % (v['endBarcodes']))
+                            valid = False
+
+                    if "dualBarcodes" in v and isinstance(v['dualBarcodes'], list):
+                        for bc in v['dualBarcodes']:
+                            if not isinstance(bc, basestring):
+                                logger.debug(
+                                    "api.PlannedExperiment.hydrate_barcodedSamples() - INVALID bc - NOT an str - bc=%s" % (bc))
+                                valid = False
+                    else:
+                        if "dualBarcodes" in v:
+                            logger.debug("api.PlannedExperiment.hydrate_barcodedSamples() -  INVALID v[dualBarcodes] - NOT a list!!! v[dualBarcodes]=%s" % (v['dualBarcodes']))
+                            valid = False
+                       
                     if isinstance(v.get('barcodeSampleInfo'), dict):
                         for barcode in v['barcodeSampleInfo'].values():
                             reference = barcode.get('reference') or bundle.data.get('reference', '')
@@ -3323,6 +3432,11 @@ class PlannedExperimentResource(PlannedExperimentDbResource):
             bundle.data['barcodeKitName'] = bundle.data['barcodeId']
         return bundle
 
+    def hydrate_endBarcodeKitName(self, bundle):
+        if bundle.data.get('endBarcodeKitName') and bundle.data['endBarcodeKitName'].lower() == "none":
+            bundle.data['endBarcodeKitName'] = ""
+        return bundle
+    
     def hydrate_planStatus(self, bundle):
         planStatus = bundle.data.get('planStatus')
         if planStatus:
@@ -3457,6 +3571,43 @@ class PlannedExperimentResource(PlannedExperimentDbResource):
 
         return bundle
 
+
+    def hydrate_mixedTypeRNA_reference(self, bundle):
+        if bundle.data.get('mixedTypeRNA_reference') and bundle.data['mixedTypeRNA_reference'].lower() == "none":
+            bundle.data['mixedTypeRNA_reference'] = ""
+        if 'mixedTypeRNA_reference' in bundle.data:
+            bundle.data['mixedTypeRNA_reference'] = bundle.data['mixedTypeRNA_reference']
+        return bundle
+
+    def hydrate_mixedTypeRNA_targetRegionBedFile(self, bundle):
+        bedfile = bundle.data.get('mixedTypeRNA_targetRegionBedFile')
+        if bedfile:
+            if bedfile.lower() == "none":
+                bundle.data['mixedTypeRNA_targetRegionBedFile'] = ""
+            else:
+                bedfile_path = self._get_bedfile_path(bedfile, bundle.data.get('mixedTypeRNA_reference', ''))
+                if bedfile_path:
+                    bundle.data['mixedTypeRNA_targetRegionBedFile'] = bedfile_path
+
+        if 'mixedTypeRNA_targetRegionBedFile' in bundle.data:
+            bundle.data['mixedTypeRNA_targetRegionBedFile'] = bundle.data['mixedTypeRNA_targetRegionBedFile']
+
+        return bundle
+    
+    def hydrate_mixedTypeRNA_hotSpotRegionBedFile(self, bundle):
+        bedfile = bundle.data.get('mixedTypeRNA_hotSpotRegionBedFile')
+        if bedfile:
+            if bedfile.lower() == "none":
+                bundle.data['mixedTypeRNA_hotSpotRegionBedFile'] = ""
+            else:
+                bedfile_path = self._get_bedfile_path(bedfile, bundle.data.get('mixedTypeRNA_reference', ''))
+                if bedfile_path:
+                    bundle.data['mixedTypeRNA_hotSpotRegionBedFile'] = bedfile_path
+
+        if 'mixedTypeRNA_hotSpotRegionBedFile' in bundle.data:
+            bundle.data['mixedTypeRNA_hotSpotRegionBedFile'] = bundle.data['mixedTypeRNA_hotSpotRegionBedFile']
+
+        return bundle
 
     def hydrate_selectedPlugins(self, bundle):
         selectedPlugins = bundle.data.get('selectedPlugins', "")
@@ -3727,7 +3878,6 @@ class AvailableIonChefPlannedExperimentResource(ModelResource):
                                      "parentPlan",
                                      "libraryTubeBarCode",
                                      "sampleTubeLabel",
-                                     "templatingSize",
                                      "templatingKitName",
                                      "samplePrepProtocol",
                                      "chipType"
@@ -3736,6 +3886,14 @@ class AvailableIonChefPlannedExperimentResource(ModelResource):
         for key,value in bundle.data.iteritems():
             if key in required_chef_fields_list:
                 chef_bundle[key] = value
+                if key == "samplePrepProtocol":
+                    chef_bundle["samplePrepProtocolName"] = ""
+                    if value:
+                        try:
+                            cvObj = models.common_CV.objects.get(cv_type="samplePrepProtocol",value=value)
+                            chef_bundle["samplePrepProtocolName"] = cvObj.displayedValue
+                        except Exception as Err:
+                            logger.error(Err)
 
         return chef_bundle
 
@@ -3751,7 +3909,8 @@ class AvailableIonChefPlannedExperimentResource(ModelResource):
         return orm_filters
 
     class Meta:
-        queryset = models.PlannedExperiment.objects.filter(planStatus__in=['pending'], isReusable=False, planExecuted=False)
+        queryset = models.PlannedExperiment.objects.filter(
+            planStatus__in=['pending'], isReusable=False, planExecuted=False)
 
         # allow ordering and filtering by all fields
         field_list = models.PlannedExperiment._meta.get_all_field_names()
@@ -3779,7 +3938,6 @@ class AvailableIonChefPlannedExperimentSummaryResource(ModelResource):
                                      "parentPlan",
                                      "libraryTubeBarCode",
                                      "sampleTubeLabel",
-                                     "templatingSize",
                                      "templatingKitName",
                                      "samplePrepProtocol"
                                      ]
@@ -4231,9 +4389,11 @@ class TorrentSuite(ModelResource):
         return self.dispatch('sgejobs', request, **kwargs)
 
     def get_update(self, request, **kwargs):
+        from ion.utils.TSversion import findVersions, offcycleVersions
 
         updateStatus = {}
         versions, meta_version = findVersions()
+        versions.update(offcycleVersions())
         updateStatus["versions"] = versions
         updateStatus["meta_version"] = meta_version
 
@@ -4386,15 +4546,7 @@ class PublisherResource(ModelResource):
 
 class ContentUploadResource(ModelResource):
     pub = fields.CharField(readonly=True, attribute='publisher__name')
-
-    def dehydrate(self, bundle):
-        bundle.data['name'] = os.path.basename(bundle.obj.file_path)
-        bundle.data['upload_type'] = bundle.obj.upload_type()
-        meta = bundle.data.get('meta')
-        if meta:
-            bundle.data['upload_date'] = meta.get('upload_date')
-
-        return bundle
+    name = fields.CharField(readonly=True, attribute='get_file_name')
 
     class Meta:
         max_limit = 0
@@ -4413,6 +4565,9 @@ class ContentUploadResource(ModelResource):
 class ContentResource(ModelResource):
     publisher = ToOneField(PublisherResource, 'publisher')
     contentupload = ToOneField(ContentUploadResource, 'contentupload')
+    upload_id = fields.CharField(readonly=True, attribute='contentupload_id')
+    upload_date = fields.DateTimeField(readonly=True, attribute='contentupload__upload_date')
+    name = fields.CharField(readonly=True, attribute='get_file_name')
 
     def prepend_urls(self):
         return [
@@ -4441,7 +4596,12 @@ class ContentResource(ModelResource):
                 'publisher': upload.publisher,
                 'meta': upload.meta,
                 'file': file_path,
-                'path': data.get('path') or os.path.basename(file_path)
+                'path': data.get('path') or os.path.basename(file_path),
+                'type': data.get('type') or upload.upload_type,
+                'extra': data.get('extra', ''),
+                'description': data.get('description', ''),
+                'notes': data.get('notes', ''),
+                'application_tags': data.get('application_tags', ''),
             }
             content_kwargs['meta'].update(data.get('meta', {}))
 
@@ -4455,23 +4615,47 @@ class ContentResource(ModelResource):
 
     def apply_filters(self, request, filters):
         base_object_list = super(ContentResource, self).apply_filters(request, filters)
+
+        all_text = request.GET.get('all_text')
+        if all_text:
+            qset = (
+                Q(path__icontains=all_text) |
+                Q(description__icontains=all_text) |
+                Q(notes__icontains=all_text)
+            )
+            base_object_list = base_object_list.filter(qset)
+
         # include SSE bed file only if requested
         include_sse_bedfile = request.GET.get('include_sse', None)
         if not include_sse_bedfile:
             base_object_list = base_object_list.exclude(meta__contains='"sse":true')
 
-        return base_object_list
+        return base_object_list.distinct()
 
+    def hydrate(self, bundle):
+        # backwards compat: description, notes and enabled are saved also in meta field
+        meta = bundle.data.get('meta') or {}
+        if isinstance(meta, basestring):
+            meta = json.loads(meta)
+
+        if 'description' in bundle.data:
+            meta['description'] = bundle.data['description']
+        if 'notes' in bundle.data:
+            meta['notes'] = bundle.data['notes']
+        if 'enabled' in bundle.data:
+            meta['enabled'] = bundle.data['enabled']
+
+        bundle.data['meta'] = meta
+        return bundle
 
     class Meta:
         max_limit = 0
         
         queryset = models.Content.objects.all()
-
         register_allowed_methods = ['post']
 
         # allow ordering and filtering by all fields
-        field_list = models.Content._meta.get_all_field_names()
+        field_list = models.Content._meta.get_all_field_names() + ['upload_date']
         ordering = field_list
         filtering = field_dict(field_list)
 
@@ -5013,7 +5197,7 @@ class CompositeDataManagementResource(ModelResource):
                         qset = qset & Q(dmfilestat__preserve_data=True)
 
                 if "P" in filter_list:
-                    filter_list.extend(['AG', 'DG', 'EG', 'SA', 'SE', 'S', 'N', 'A'])
+                    filter_list.extend(['AG', 'DG', 'EG', 'IG', 'SA', 'SE', 'S', 'N', 'A'])
 
                 filter_list = [f for f in filter_list if f not in ['K','P']]
                 if filter_list:
@@ -5237,7 +5421,6 @@ class MonitorResultResource(ModelResource):
 
 
 class CompositePlannedExperimentResource(ModelResource):
-
     class Meta:
         queryset = models.PlannedExperiment.objects.all()
 
@@ -5381,21 +5564,11 @@ class CompositeExperimentResource(ModelResource):
         return self.dispatch('show', request, **kwargs)
 
     def get_composite_applCatDisplayedName(self, bundle):
-        applicationCategoryDisplayedName = bundle.obj.plan.get_applicationCategoryDisplayedName(bundle.obj.plan.categories) if bundle.obj and bundle.obj.plan else ""
-        try:
-            runTypeObj = models.RunType.objects.filter(runType=bundle.obj.plan.runType)
-            if runTypeObj:
-                if applicationCategoryDisplayedName:
-                    categoryDisplayedName = applicationCategoryDisplayedName
-                    categoryDisplayedName += " | "
-                    categoryDisplayedName += runTypeObj[0].description
-                else:
-                    categoryDisplayedName = runTypeObj[0].description
-            else:
-                categoryDisplayedName = applicationCategoryDisplayedName
-        except Exception as err:
-            categoryDisplayedName = applicationCategoryDisplayedName if applicationCategoryDisplayedName else ""
-            logger.debug("Error occured while getting the application category displayed name %s" % err)
+        
+        if bundle.obj and bundle.obj.plan:
+            categoryDisplayedName = bundle.obj.plan.get_composite_applCatDisplayedName()
+        else:
+            categoryDisplayedName = ""
 
         return categoryDisplayedName
 
@@ -5465,13 +5638,17 @@ class CompositeExperimentResource(ModelResource):
         return bundle
 
     def apply_filters(self, request, applicable_filters):
+        if request.GET.get('chefReagentsSerialNum', None):
+            chefReagentsSerialNum = applicable_filters.pop("chefReagentsSerialNum__exact")
+        if request.GET.get('chefSolutionsSerialNum', None):
+            chefSolutionsSerialNum = applicable_filters.pop("chefSolutionsSerialNum__exact")
+
         base_object_list = super(CompositeExperimentResource, self).apply_filters(request, applicable_filters)
         qset = []
-
-        # Apply all_text filter
         all_text = request.GET.get('all_text', '')
         for token in all_text.split(" OR "):
             token = token.strip()
+
             if token:
                 qset.extend([
                     # Contains
@@ -5483,6 +5660,7 @@ class CompositeExperimentResource(ModelResource):
                     Q(plan__planShortID=token),
                     Q(chipBarcode=token)
                 ])
+
         if qset:
             or_qset = reduce(operator.or_, qset)
             base_object_list = base_object_list.filter(or_qset)
@@ -5495,6 +5673,16 @@ class CompositeExperimentResource(ModelResource):
                 samplePrep_instrumentType=sample_prep
             ).values_list('name', flat=True)
             base_object_list = base_object_list.filter(plan__templatingKitName__in=kit_names)
+
+        chefReagentsSerialNum = request.GET.get('chefReagentsSerialNum', None)
+        chefSolutionsSerialNum = request.GET.get('chefSolutionsSerialNum', None)
+        if chefReagentsSerialNum and chefSolutionsSerialNum:
+            qset = (
+                Q(chefReagentsSerialNum__exact=chefReagentsSerialNum) | Q(chefSolutionsSerialNum__exact=chefSolutionsSerialNum)
+            )
+            base_object_list = base_object_list.filter(qset).exclude(status__in=["pending","transferred"])
+        else:
+            base_object_list = base_object_list.exclude(status="planned").exclude(expDir="")
 
         # Apply samples__name__in filter
         samples = request.GET.get('samples__name__in', None)
@@ -5520,6 +5708,14 @@ class CompositeExperimentResource(ModelResource):
                     Q(results_set__timeStamp__range=date_limits)
                 )
                 base_object_list = base_object_list.filter(qset)
+
+        # Apply plugins__name__in filter
+        plugins = request.GET.get('plugins__name__in', None)
+        if plugins is not None:
+            qset = (
+                Q(results_set__pluginresult_set__plugin__name__in=plugins.split(","))
+            )
+            base_object_list = base_object_list.filter(qset)
 
         # Apply result_status filter. We will get back any exp with at least one report with the selected status.
         status = request.GET.get('result_status', None)
@@ -5550,7 +5746,7 @@ class CompositeExperimentResource(ModelResource):
             'results_set__projects',
             'results_set__dmfilestat_set',
             'samples'
-        ).exclude(status="planned").exclude(expDir="").exclude(expName="NONE_ReportOnly_NONE").order_by('-resultDate').only(
+        ).exclude(expName="NONE_ReportOnly_NONE").order_by('-resultDate').only(
             'plan', 'repResult',
             # fields used by the Data page, update as needed
             'star', 'pgmName', 'chipType', 'platform', 'notes', 'flows', 'resultDate', 'runMode', 'expName', 'date'
@@ -5563,7 +5759,8 @@ class CompositeExperimentResource(ModelResource):
             'pgmName', 'resultDate', 'results',
             'results_set', 'runMode', 'repResult',
             'star', 'storage_options', 'plan', 'platform',
-            'displayName'
+            'displayName', 'status', 'chefReagentsSerialNum', 'chefSolutionsSerialNum',
+            "chefStartTime"
         ]
 
         fields = field_list
@@ -5584,10 +5781,6 @@ class TemplateValidation(Validation):
     def is_valid(self, bundle, request=None):
         if not bundle.data:
             return {'__all__': 'Fatal Error, no bundle!'}
-
-        if not bundle.data.get('isofficial', True):
-            # skip validation if TF is not enabled
-            return
 
         errors = {}
         for key in ['name', 'key', 'sequence']:
@@ -6008,6 +6201,155 @@ class PrepopulatedPlanningSessionResource(ModelResource):
         authorization = DjangoAuthorization()
         session_allowed_methods = ['post']
 
+class GetChefCartridgeUsageResource(ModelResource):
+    # This api sends all the potential flexible workflow information back to Chef
+
+    def prepend_urls(self):
+        urls = [url(r"^(?P<resource_name>%s)%s$" % (self._meta.resource_name, trailing_slash()),
+                    self.wrap_view('dispatch_update'), name="api_dispatch_update")
+                ]
+
+        return urls
+
+    def dispatch_update(self, request, **kwargs):
+        return self.dispatch('update', request, **kwargs)
+
+    def get_update(self, request, **kwargs):
+        dbParams = {}
+        params = request.GET.copy()
+        cfw_validator = ChefFlexibleWorkflowValidator()
+        error_codes = cfw_validator.error_warning_codes
+
+        if not params.get("chefCurrentTime"):
+            now = datetime.datetime.utcnow().isoformat()
+            params["chefCurrentTime"] = now
+
+        # Validate the input parameters
+        response = cfw_validator.validate_inputParams(params=params)
+
+        if response["allowRunToContinue"]:
+            response = cfw_validator.validate_chefFlexibleWorkflowKit(params=params)
+            dbParams['cartridgeUsageCount'] = response.pop("defaultCartridgeUsageCount", None)
+            dbParams['cartridgeExpirationDayLimit'] = response.pop("cartridgeExpirationDayLimit", None)
+            dbParams['cartridgeBetweenUsageAbsoluteMaxDayLimit'] = response.pop("cartridgeBetweenUsageAbsoluteMaxDayLimit", None)
+        if response["allowRunToContinue"]:
+            response = cfw_validator.validate_ionMesh_nodes()
+        if response["allowRunToContinue"]:
+            expParams = {
+                "chefSolutionsSerialNum": params.get("chefSolutionsSerialNum", None),
+                "chefReagentsSerialNum": params.get("chefReagentsSerialNum", None)
+            }
+            try:
+                auth_response = requests.get('http://%s/rundb/api/mesh/v1/compositeexperiment/' % 'localhost', params=expParams)
+
+                if auth_response.status_code == 401:
+                    errCode = "E401"
+                    response["allowRunToContinue"] = False
+                    response["errorCodes"].append(errCode)
+                    response["detailMessage"][errCode] = error_codes["E401"]
+                elif auth_response.status_code != 200:
+                    errCode = "E402"
+                    response["allowRunToContinue"] = False
+                    response["errorCodes"].append(errCode)
+                    response["detailMessages"][errCode] = error_codes[errCode].format(auth_response.reason)
+            except Exception as exc:
+                errCode = "E501"
+                response["allowRunToContinue"] = False
+                response["errorCodes"].append(errCode)
+                response["detailMessages"][errCode] = str(exc)
+
+            if response["allowRunToContinue"]:
+                data = auth_response.json()
+                response = cfw_validator.validate_get_chefCartridge_info(data=data, params=params, dbParams=dbParams)
+
+        return self.create_response(request, response)
+
+    def get_schema(self, request, **kwargs):
+        schema = {
+            "allowed_detail_http_methods": [],
+            "allowed_list_http_methods": [
+                "get"
+            ],
+            "default_format": "application/json",
+            "default_limit": 0,
+            "fields": {
+                "allowRunToContinue": {
+                    "blank": True,
+                    "default": "No default provided.",
+                    "help_text": "Boolean string data. Ex: \"true or false\"",
+                    "nullable": True,
+                    "readonly": True,
+                    "type": "boolean",
+                    "unique": False
+                },
+                "detailMessages": {
+                    "blank": True,
+                    "default": "No default provided.",
+                    "help_text": "A dictionary of data. Ex: {'E300': 'No. of reagent and solution usage do not match'}",
+                    "nullable": True,
+                    "readonly": True,
+                    "type": "dict",
+                    "unique": False
+                },
+                "errorCodes": {
+                    "blank": True,
+                    "default": "No default provided.",
+                    "help_text": "A lists of data. Ex: [\"E200\"] or [\"W100\", \"W200\"]",
+                    "nullable": True,
+                    "readonly": True,
+                    "type": "List Object",
+                    "unique": False
+                },
+                "hoursSinceReagentFirstUse": {
+                    "blank": True,
+                    "default": "No default provided.",
+                    "help_text": "Integer number of hours between (oldest associated experiment using Reagent) and (chefCurrentTime). "
+                                 "Rounded down to the nearest hour is OK. Ex: 48",
+                    "nullable": True,
+                    "readonly": True,
+                    "type": "Integer",
+                    "unique": False
+                },
+                "hoursSinceSolutionFirstUse": {
+                    "blank": True,
+                    "default": "No default provided.",
+                    "help_text": "Integer number of hours between (oldest associated experiment using Solution) and (chefCurrentTime). "
+                                 "Rounded down to the nearest hour is OK. Ex: 24",
+                    "nullable": True,
+                    "readonly": True,
+                    "type": "Integer",
+                    "unique": False
+                },
+                "numberReagentSerialUsage": {
+                    "blank": True,
+                    "default": "No default provided.",
+                    "help_text": "Integer number. No of Reagent cartridge Usage Ex: 2",
+                    "nullable": True,
+                    "readonly": True,
+                    "type": "Integer",
+                    "unique": False
+                },
+                "numberSolutionSerialUsage": {
+                    "blank": True,
+                    "default": "No default provided.",
+                    "help_text": "Integer number. No of Solution cartridge Usage Ex: 2",
+                    "nullable": True,
+                    "readonly": True,
+                    "type": "Integer",
+                    "unique": False
+                }
+            },
+            "filtering": {},
+            "ordering": []
+        }
+
+        return HttpResponse(json.dumps(schema), content_type="application/json")
+
+    class Meta:
+        authentication = IonAuthentication()
+        authorization = DjangoAuthorization()
+        update_allowed_methods = ['get']
+
 
 class GetChefScriptInfoResource(ModelResource):
 
@@ -6210,6 +6552,9 @@ class IonMeshNodeResource(ModelResource):
             node.hostname = data['hostname']
             node.apikey_remote = data['apikey']
             node.name = data.get('name') or node.hostname
+            # handle edge case: host was entered previously via SharedServer migration
+            duplicate = models.IonMeshNode.objects.filter(hostname = node.hostname).exclude(pk=node.pk)
+            duplicate.delete()
             node.save()
         except Exception as exc:
             logger.error('Exchange Keys error.')
@@ -6217,4 +6562,3 @@ class IonMeshNodeResource(ModelResource):
             return HttpApplicationError(str(exc))
         else:
             return self.create_response(request=request, data={'apikey' : node.apikey_local})
-

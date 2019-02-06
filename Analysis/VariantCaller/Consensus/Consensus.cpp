@@ -215,7 +215,7 @@ int ConsensusMain(int argc, char* argv[]) {
 	bam_walker.Close();
 
 	// write the target coverage txt
-	vc.targets_manager->WriteTargetsCoverage(parameters.outputDir + "/targets_depth.txt" , *vc.ref_reader);
+	vc.targets_manager->WriteTargetsCoverage(parameters.outputDir + "/targets_depth.txt" , *vc.ref_reader, parameters.read_count_by_best_target, vc.mol_tag_manager->tag_trimmer->HaveTags());
 
 	pthread_mutex_destroy(&mutexbam);
 
@@ -412,15 +412,23 @@ void * FlowSpaceConsensusWorker(void *input) {
 				// These two variables should be parameters of consensus.
 				vc.targets_manager->FilterReadByRegion(new_read[i], vc.bam_walker->GetRecentUnmergedTarget());
 				if (new_read[i]->filtered)
-				{ continue; }
-				// 4) Unpacking read meta data for flow-space consensus
+				  continue;
+
+		        // 4) Calculate the hash for family identification
+		        vc.mol_tag_manager->PreComputeForFamilyIdentification(new_read[i]);
+				if (new_read[i]->filtered)
+				  continue;
+
+				// 5) Unpacking read meta data for flow-space consensus
 				UnpackOnLoadLight(new_read[i], *vc.global_context);
-				// 5) Count how many reads that use the program for alignment.
-				vc.consensus_bam_walker->AddReadToPG(new_read[i]);
 			}
 
 			pthread_mutex_lock(&vc.bam_walker_mutex);
 			for (int i = 0; i < kReadBatchSize; ++i) {
+				if (success[i]){
+					// Count how many reads that use the program for alignment. Must be done in a locked mutex!
+					vc.consensus_bam_walker->AddReadToPG(new_read[i]);
+				}
 				vc.bam_walker->FinishReadProcessingTask(new_read[i], success[i]);
 			}
 			pthread_mutex_unlock(&vc.bam_walker_mutex);
@@ -494,7 +502,7 @@ void * FlowSpaceConsensusWorker(void *input) {
 						my_molecular_families_multisample[sample_index][strand][0].all_family_members.reserve(4096);
 					}
 					// I reuse all_family_members.
-					my_molecular_families_multisample[sample_index][strand][0].all_family_members.resize(0);
+					my_molecular_families_multisample[sample_index][strand][0].ResetFamily();
 				}
 			}
 			for (Alignment* rai = target_ticket->begin; rai != target_ticket->end; rai = rai->next) {
@@ -510,6 +518,12 @@ void * FlowSpaceConsensusWorker(void *input) {
 				// Label all the reads being processed here as filtered, so they won't be use again.
 				rai->filtered = true;
 			}
+			// Count the family size here since I reuse the container.
+			for (int sample_index = 0; sample_index < sample_num; ++sample_index) {
+				for (int strand = 0; strand < 2; ++strand){
+					my_molecular_families_multisample[sample_index][strand][0].CountFamSizeFromAll();
+				}
+			}
 		}
 		pthread_mutex_unlock(&vc.read_filter_mutex);
 
@@ -517,37 +531,19 @@ void * FlowSpaceConsensusWorker(void *input) {
 		GenerateFlowSpaceConsensusPositionTicket(my_molecular_families_multisample,
 				flowspace_consensus_master,
 				(unsigned int) effective_min_family_size,
+				vc.consensus_parameters->tag_trimmer_parameters.min_fam_per_strand_cov,
 				consensus_position_ticket,
 				aln_needed_consensus_position_ticket,
 				vc.targets_manager,
-				vc.consensus_parameters->skip_consensus);
+				vc.consensus_parameters->skip_consensus,
+				use_molecular_tag);
 
 		if (not vc.consensus_parameters->skip_consensus){
 			// Save consensus_position_ticket and aln_needed_consensus_position_ticket to the bam files
-			vc.consensus_bam_walker->SaveConsensusAlignments(consensus_position_ticket->begin, aln_needed_consensus_position_ticket->begin);
-
-			// delete consensus_position_ticket
-			while ((consensus_position_ticket->begin != NULL) and (consensus_position_ticket->begin != consensus_position_ticket->end)) {
-				Alignment* p = consensus_position_ticket->begin;
-				consensus_position_ticket->begin = consensus_position_ticket->begin->next;
-				delete p;
-			}
-			if (consensus_position_ticket->begin != NULL) {
-				delete consensus_position_ticket->begin;
-				consensus_position_ticket->begin = NULL;
-				consensus_position_ticket->end = NULL;
-			}
-			// delete aln_needed_consensus_position_ticket
-			while ((aln_needed_consensus_position_ticket->begin != NULL) and (aln_needed_consensus_position_ticket->begin != aln_needed_consensus_position_ticket->end)) {
-				Alignment* p = aln_needed_consensus_position_ticket->begin;
-				aln_needed_consensus_position_ticket->begin = aln_needed_consensus_position_ticket->begin->next;
-				delete p;
-			}
-			if (aln_needed_consensus_position_ticket->begin != NULL) {
-				delete aln_needed_consensus_position_ticket->begin;
-				aln_needed_consensus_position_ticket->begin = NULL;
-				aln_needed_consensus_position_ticket->end = NULL;
-			}
+			vc.consensus_bam_walker->SaveConsensusAlignments(consensus_position_ticket, aln_needed_consensus_position_ticket);
+			// Clear the tickets
+			ConsensusPositionTicketManager::ClearConsensusPositionTicket(consensus_position_ticket);
+			ConsensusPositionTicketManager::ClearConsensusPositionTicket(aln_needed_consensus_position_ticket);
 		}
 //		pthread_mutex_unlock(&vc.candidate_generation_mutex);
 		pthread_mutex_lock(&vc.bam_walker_mutex);

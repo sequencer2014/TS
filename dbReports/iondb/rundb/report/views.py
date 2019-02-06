@@ -75,7 +75,7 @@ def get_csa(request, pk):
         # Generate report PDF file.
         # This will create a file named report.pdf in results directory
         makePDF.write_report_pdf(pk)
-        csa_path = makeCSA.makeCSA(report_dir, raw_data_dir)
+        csa_path = makeCSA.makeCSA(report_dir, raw_data_dir, None, result.experiment.chefLogPath)
 
         # thumbnails will also include fullchip report pdf
         if result.isThumbnail:
@@ -88,17 +88,6 @@ def get_csa(request, pk):
                         f.write(fullchip_pdf, 'full_%s' % os.path.basename(fullchip_pdf))
                 except:
                     logger.error(traceback.format_exc())
-
-                # get the coverage analysis results set
-                coverage_analysis_results_set = fullchip_result.pluginresult_set.filter(plugin__name='coverageAnalysis')
-                if coverage_analysis_results_set:
-                    coverage_analysis_result = coverage_analysis_results_set.first()
-                    coverage_analysis_result_path = coverage_analysis_result.path()
-                    coverage_analysis_files = get_coverage_analysis_files(coverage_analysis_result_path)
-                    with zipfile.ZipFile(csa_path, mode='a', compression=zipfile.ZIP_DEFLATED, allowZip64=True) as csa_handle:
-                        for coverage_analysis_file in coverage_analysis_files:
-                            relative_path = coverage_analysis_file.replace(coverage_analysis_result_path + '/', '', 1)
-                            csa_handle.write(coverage_analysis_file, os.path.join('coverageAnalysis', relative_path))
 
         response = http.HttpResponse(FileWrapper(open(csa_path)), mimetype='application/zip')
         response['Content-Disposition'] = 'attachment; filename=%s' % os.path.basename(csa_path)
@@ -415,7 +404,7 @@ def InitLog_read(report):
                             'clean' : 'Ion S5 Cleaning Solution',
                             'wash' : 'Ion S5 Wash Solution'}
 
-    existing_consumables = initLogDict.keys()
+    existing_consumables = sorted(initLogDict.keys())
     # get the consumables irrespective of sequencing kits
     existing_consumables_generic = [expected_consumables[key] for key in expected_consumables.keys()
                                     if any(key in xs.lower() for xs in existing_consumables)]
@@ -574,11 +563,14 @@ def report_chef_display(report):
         #("chefManufactureDate", "Manufacturing Date"),
         ("chefKitType", "Templating Kit Type"),
         #("chefReagentID", "Reagent Id"),
+        ("chefFlexibleWorkflow", "Chef Flexible Workflow"),
         ("chefReagentsExpiration", "Reagent Expiration"),
         ("chefReagentsLot", "Reagent Lot Number"),
         ("chefReagentsPart", "Reagent Part Number"),
+        ("chefReagentsSerialNum", "Reagent Cartridge Serial Number"),
         ("chefSolutionsLot", "Solution Lot Number"),
         ("chefSolutionsPart", "Solution Part Number"),
+        ("chefSolutionsSerialNum", "Solution Cartridge Serial Number"),
         ("chefSolutionsExpiration", "Solution Expiration"),
         ("chefProtocolDeviationName", "Templating Protocol Executed"),
         ("chefScriptVersion", "Chef Script Version"),
@@ -1131,8 +1123,7 @@ def _report_context(request, report_pk):
     isInternalServer = is_internal_server()
 
     try:
-        # TODO
-        if isInternalServer and len(report.experiment.log.get('blocks', '')) > 0 and not report.isThumbnail:
+        if _should_build_report_for_blocks(isInternalServer, report, experiment):
             proton_log_blocks = report.experiment.log['blocks']
             proton_block_tuples = []
             for b in proton_log_blocks:
@@ -1211,10 +1202,16 @@ def _report_context(request, report_pk):
     return context
 
 
+def _should_build_report_for_blocks(isInternalServer, report, experiment):
+    if not report or not experiment:
+        return False
+
+    return isInternalServer and len(report.experiment.log.get('blocks', '')) > 0 and not report.isThumbnail
+    
+    
 def _get_sequencer_operation_mode(report):
     DEFAULT = "Unknown"
     SERVICE = "Service mode"
-    ADVANCED = "Advanced mode"
     CUSTOM = "Customer mode"
     explog_key = "service_mode"
     pgm_explog_key = "advanced_user"
@@ -1224,7 +1221,7 @@ def _get_sequencer_operation_mode(report):
         return SERVICE if (value.lower() in ["yes", "true"]) else CUSTOM
     elif pgm_explog_key in report.experiment.log:
         value = report.experiment.log.get(pgm_explog_key)
-        return ADVANCED if (value.lower() in ["yes", "true"]) else CUSTOM
+        return SERVICE if (value.lower() in ["yes", "true"]) else CUSTOM
     return DEFAULT
 
 
@@ -1419,6 +1416,9 @@ def analyze(request, exp_pk, report_pk):
     if request.method == 'GET' or re_analysis:
         # this is a reanalysis web page request
         ctxd, eas, post_dict = reanalyze(request, exp, eas, plugins_list, report_pk)
+
+        if 'start_error' in ctxd:
+            return render_to_response("rundb/reports/analyze.html", context_instance=RequestContext(request, ctxd))
     else:
         # this is new analysis POST request (e.g. from crawler)
         post_dict = {}
@@ -1462,7 +1462,7 @@ def analyze(request, exp_pk, report_pk):
                 return render_to_response("rundb/reports/analyze.html", context_instance=RequestContext(request, ctxd))
             else:
                 # TODO: could add banner msg to alert user analysis was not able to start
-                logger.exception(traceback.format_exc())
+                logger.error(traceback.format_exc())
                 return HttpResponseServerError(str(e))
     else:
         # render the re-analysis web page
@@ -1484,6 +1484,7 @@ def reanalyze(request, exp, eas, plugins_list, start_from_report=None):
     params = False
     javascript = ""
     has_thumbnail = exp.getPlatform in ['s5', 'proton']
+    configuration_errors = list()
 
     # get the list of report addresses
     resultList = models.Results.objects.filter(experiment=exp, status__contains='Completed').order_by("timeStamp")
@@ -1608,6 +1609,10 @@ def reanalyze(request, exp, eas, plugins_list, start_from_report=None):
                 plugins_list = form_plugins_list
                 selectedPlugins = {}
                 for plugin in form_plugins_list:
+                    configuration = form_pluginsUserInput.get(str(plugin.id), '')
+                    # check each plugin and ensure that each of them have been properly configured.
+                    configuration_errors += models.Plugin.validate(plugin.id, configuration, 'plan')
+
                     selectedPlugins[plugin.name] = {
                         "id": str(plugin.id),
                         "name": plugin.name,
@@ -1752,9 +1757,20 @@ def reanalyze(request, exp, eas, plugins_list, start_from_report=None):
             """
             javascript += '$("#id_previousReport").val("'+previousReportDir + '");'
 
-    ctxd = {"rpf": rpf, "eas_form": eas_form, "exp": exp, "javascript": javascript,
-            "has_thumbnail": has_thumbnail, "reportpk": start_from_report, "warnings": json.dumps(warnings),
-            "barcodesWithSamples": barcodesWithSamples, 'analysisargs': analysisargs, 'eas_args_dict': json.dumps(eas_args_dict)}
+    ctxd = {
+        "rpf": rpf,
+        "eas_form": eas_form,
+        "exp": exp,
+        "javascript": javascript,
+        "has_thumbnail": has_thumbnail,
+        "reportpk": start_from_report,
+        "warnings": json.dumps(warnings),
+        "barcodesWithSamples": barcodesWithSamples,
+        'analysisargs': analysisargs,
+        'eas_args_dict': json.dumps(eas_args_dict)
+    }
+    if configuration_errors:
+        ctxd['start_error'] = ' | '.join(configuration_errors)
 
     return ctxd, eas, params
 

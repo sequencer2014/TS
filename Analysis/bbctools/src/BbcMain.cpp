@@ -37,7 +37,7 @@ const int s_initialMinJumpLen = 1000000;
 const int s_initialMaxReadLen = 1000;
 
 // Current version number string for bbctools executable
-const uint16_t s_versionNumber = 1200;
+const uint16_t s_versionNumber = 1301;
 
 // Forward declarations of functions used by main()
 int bbctools_create( BbcUtils::OptParser &optParser );
@@ -49,7 +49,7 @@ int main( int argc, char* argv[] ) {
 	//
 	// general command line argument validation
 	//
- 	if( argc <= 1 ) {
+    	if( argc <= 1 ) {
     	cout << "BBCtools version " << BbcUtils::numberToString( (double)s_versionNumber/1000, 3 ) << endl;
 		Usage("");
 		return 1;
@@ -61,8 +61,8 @@ int main( int argc, char* argv[] ) {
 	if( subcmd == "create" ) {
 		subcmdFunc = &bbctools_create;
 		parseString =  "A=annotationFields:B=bbc:C=covStats:D=covDepths:E=e2eGap,L=minAlignLength,M=minPcCov;";
-		parseString += "O=readOrigin:P=primerLength,Q=minMAPQ,R=regions:S=sumStats:T=readType:a=autoCreateBamIndex ";
-		parseString += "b=onTargetBases c=coarse i=index d=noDups r=onTargetReads s=samdepth u=unique";
+		parseString += "O=readOrigin:P=primerLength,Q=minMAPQ,R=regions:S=sumStats:T=readType:W=widenRegions,";
+		parseString += "a=autoCreateBamIndex b=onTargetBases c=coarse i=index d=noDups r=onTargetReads s=samdepth u=unique";
 		maxArgs = 0;
 	} else if( subcmd == "report" ) {
 		subcmdFunc = &bbctools_report;
@@ -138,6 +138,7 @@ int bbctools_create( BbcUtils::OptParser &optParser ) {
 	bool     samdepth         = optParser.getOptBoolean("samdepth");
 	int32_t  filterQuality    = optParser.getOptInteger("minMAPQ");
 	int32_t  minAlignLength   = optParser.getOptInteger("minAlignLength");
+	int32_t  regionsPadding   = optParser.getOptInteger( "widenRegions", (readType == "AmpliSeq" ? 2 : 0) );
 	bool     filterDuplicates = optParser.getOptBoolean("noDups");
 	bool     filterUnique     = optParser.getOptBoolean("unique");
 	uint32_t skipFlag         = filterDuplicates ? 0x704 : 0x304;
@@ -280,6 +281,7 @@ int bbctools_create( BbcUtils::OptParser &optParser ) {
 	}
 	// Load the input regions or default to whole reference contig targets
 	if( regions ) {
+		regions->SetRegionPadding(regionsPadding);
 		regions->SetCovAtDepths( covDepths == "-" ? "20,100,500" : covDepths );
 		if( targetRegions.empty() ) {
 			regions->SetWholeContigTargets();

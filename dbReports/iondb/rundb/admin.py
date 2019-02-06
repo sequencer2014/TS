@@ -17,6 +17,7 @@ from django.shortcuts import render_to_response
 from django.http import HttpResponseRedirect
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.sessions.models import Session
+from django.core.urlresolvers import reverse
 
 from django import http
 import httplib2
@@ -33,6 +34,7 @@ import re
 import logging
 import urllib
 import markdown
+import time
 
 from ion.utils.TSversion import findUpdates, findOSversion
 
@@ -332,7 +334,7 @@ def get_zip_logs(request):
 
     zipPath = '/tmp/logs.zip'
     zipfile = zipfile.ZipFile(zipPath, mode='w', allowZip64=True)
-    for afile in ['tsconfig_gui.log', 'django.log', 'celery_w1.log', 'tsconfig_debug.log']:
+    for afile in ['tsconfig_gui.log', 'django.log', 'celery_w1.log', 'tsconfig_debug.log', 'product_integration.log']:
         fullpath = os.path.join('/var/log/ion', afile)
         if os.path.exists(fullpath):
             zipfile.write(fullpath, arcname=afile, compress_type=compression)
@@ -644,6 +646,21 @@ def exp_redo_from_scratch(request):
         return HttpResponseRedirect("/admin/rundb/experiment/")
 
 
+@staff_member_required
+def configure_server(request):
+    if request.method == "POST":
+        tasks.configure_server.delay()
+        # Wait up to 5 seconds for the lock the to be created
+        for _ in range(50):
+            if os.path.exists("/var/lock/tsconfiglock"):
+                break
+            time.sleep(0.1)
+        return HttpResponseRedirect(reverse("configure_server"))
+    return render_to_response("admin/configure_server.html", {
+        "tsconfig_lock": os.path.exists("/var/lock/tsconfiglock")
+    })
+
+
 class PluginResultAdmin(admin.ModelAdmin):
 
     def total_size(self, obj):
@@ -737,13 +754,14 @@ class ChipAdmin(admin.ModelAdmin):
 
 
 class dnaBarcodeAdmin(admin.ModelAdmin):
-    list_display = ('name', 'id_str', 'sequence', 'adapter', 'annotation', 'score_mode', 'score_cutoff', 'type', 'length', 'floworder', 'index')
+    list_display = ('name', 'id_str', 'sequence', 'adapter', 'annotation', 'score_mode', 'score_cutoff', 'type', 'length', 'index')
     list_filter = ('name',)
 
 
 class RunTypeAdmin(admin.ModelAdmin):
     list_display = ('runType', 'description', 'application_groups')
     readonly_fields = ('applicationGroups',)
+    ordering = ('runType',)
 
     def application_groups(self, obj):
         return ", ".join([applicationGroup.name for applicationGroup in obj.applicationGroups.all()])
@@ -865,9 +883,9 @@ class CruncherAdmin(admin.ModelAdmin):
 
 
 class KitInfoAdmin(admin.ModelAdmin):
-    list_display = ('name', 'description', 'kitType', 'templatingSize', 'flowCount', 'uid', 'categories', 'isActive', 'instrumentType', 'samplePrep_instrumentType', 'applicationType', 'chipTypes')
+    list_display = ('name', 'description', 'kitType', 'flowCount', 'uid', 'categories', 'isActive', 'instrumentType', 'samplePrep_instrumentType', 'applicationType', 'chipTypes')
     ordering = ("kitType", "name",)
-    list_filter = ('kitType',)
+    list_filter = ('kitType','isActive',)
 
 class common_CVAdmin(admin.ModelAdmin):
     list_display = ('cv_type', 'value', 'displayedValue', 'description', 'isDefault', 'isActive', 'categories', 'samplePrep_instrumentType', 'sequencing_instrumentType', 'uid')
@@ -903,10 +921,11 @@ class SamplePrepDataAdmin(admin.ModelAdmin):
 
 
 class ApplProductAdmin(admin.ModelAdmin):
-    list_display = ('productName', 'applicationGroup', 'applType', 'isDefault', 'instrumentType', 'defaultChipType', 
-                    'isDefaultForInstrumentType', 'defaultLibraryKit', 'defaultTemplateKit', 'defaultIonChefPrepKit',
+    list_display = ('productName', 'applicationGroup', 'applType', 'isDefault', 'isVisible', 'isDefaultForInstrumentType', 
+                    'instrumentType', 'defaultChipType', 'categories',
+                    'defaultLibraryKit', 'defaultTemplateKit', 'defaultIonChefPrepKit',
                     'defaultSequencingKit', 'defaultIonChefSequencingKit', 'defaultFlowCount', 
-                    'isActive', 'isVisible', 'productCode')
+                    'isActive', 'productCode')
     ordering = ("productName", "applicationGroup", "applType", "instrumentType", "defaultChipType",)
     list_filter = ('applType',)
 
@@ -915,10 +934,15 @@ class ApplicationGroupAdmin(admin.ModelAdmin):
     list_filter = ('isActive',)
     ordering = ("name",)
 
+class ContentUploadAdmin(admin.ModelAdmin):
+    list_display = ('file_path', 'publisher', 'upload_date', 'status')
 
 class IonMeshNodeAdmin(admin.ModelAdmin):
     list_display = ('name', 'hostname', 'active', 'system_id', )
 
+class FileMonitorAdmin(admin.ModelAdmin):
+    list_display = ('__unicode__', 'name', 'url', 'tags', 'status', )
+    list_filter = ('status', 'tags', )
 
 admin.site.register(Experiment, ExperimentAdmin)
 admin.site.register(Results, ResultsAdmin)
@@ -946,7 +970,7 @@ admin.site.register(FlowOrder, FlowOrderAdmin)
 admin.site.register(PlannedExperiment, PlannedExperimentAdmin)
 admin.site.register(IonMeshNode, IonMeshNodeAdmin)
 admin.site.register(Publisher)
-admin.site.register(ContentUpload)
+admin.site.register(ContentUpload, ContentUploadAdmin)
 admin.site.register(Content)
 admin.site.register(UserEventLog)
 admin.site.register(UserProfile)
@@ -970,7 +994,7 @@ admin.site.register(DMFileSet, DMFileSetAdmin)
 admin.site.register(DMFileStat, DMFileStatAdmin)
 admin.site.register(EventLog, EventLogAdmin)
 admin.site.register(RemoteAccount)
-admin.site.register(FileMonitor)
+admin.site.register(FileMonitor, FileMonitorAdmin)
 admin.site.register(SupportUpload)
 admin.site.register(NewsPost)
 admin.site.register(AnalysisArgs, AnalysisArgsAdmin)

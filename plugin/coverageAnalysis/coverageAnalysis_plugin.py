@@ -62,69 +62,49 @@ max_filename_len = 255
 
 def addAutorunParams(plan=None):
   '''Additional parameter set up for autoruns to fill in for defaults usually set customization GUI.'''
+  # check for plan plugin configuration, where available
   config = pluginParams['config']
-  config['librarytype'] = 'WGNM'
-  config['librarytype_id'] = 'Whole Genome'
-  config['targetregions'] = ''
-  config['targetregions_id'] = 'None'
-  config['trimreads'] = 'No'
-  if not 'sampleid' in config: config['sampleid'] = 'No'
-  if not 'padtargets' in config: config['padtargets'] = '0'
-  if not 'uniquemaps' in config: config['uniquemaps'] = 'No'
-  if not 'nonduplicates' in config: config['nonduplicates'] = 'Yes'
-  config['minalignlen'] = '0'
-  config['minmapqual'] = '0'
-  config['barcodebeds'] = 'No'
-  config['barcodetargetregions'] = ''
-  # extract things from the plan if provided - for coverageAnalysis auto-run w/o a plan leads to early exit
   if plan: 
-    config['librarytype'] = runtype = plan['runType']
-    if runtype == 'AMPS':
-      config['librarytype_id'] = 'AmpliSeq DNA'
-    elif runtype == 'AMPS_EXOME':
-      config['librarytype_id'] = 'AmpliSeq Exome'
-    elif runtype == 'AMPS_RNA':
-      config['librarytype_id'] = 'AmpliSeq RNA'
-    elif runtype == 'AMPS_DNA_RNA':
-      config['librarytype_id'] = 'AmpliSeq DNA+RNA'
-    elif runtype == 'TARS':
-      config['librarytype_id'] = 'TargetSeq'
-    elif runtype == 'TAG_SEQUENCING':
-      config['librarytype_id'] = 'Tag Sequencing'
-    elif runtype == 'TARS_16S':
-      config['librarytype_id'] = '16S Targeted Sequencing'
-      config['sampleid'] = 'No'
-      config['uniquemaps'] = 'No'
-    elif runtype == 'RNA':
-      config['librarytype_id'] = 'RNA-Seq'
-      config['sampleid'] = 'No'
-      config['uniquemaps'] = 'No'
-    elif runtype == 'WGNM':
-      config['librarytype_id'] = 'Whole Genome'
-    elif runtype == 'GENS':
-      config['librarytype_id'] = 'Generic Sequencing'
+    runtype = plan['runType']
+    config['librarytype'] = runtype
+    config['librarytype_id'] = plan['runTypeDescription']
+    config['targetregions'] = target_id = plan['bedfile']
+    target_id = os.path.basename(target_id)
+    if target_id[-4:] == ".bed": target_id = target_id[:-4]
+    config['targetregions_id'] = target_id
+    if 'launch_mode' in config:
+      config['launch_mode'] = 'Autostart with plan configuration'
     else:
-      config['librarytype_id'] = "[%s]"%runtype
-      raise Exception("CATCH:Do not know how to analyze coverage for unsupported plan runType: '%s'"%runtype)
-    if runtype[:4] == 'AMPS' or runtype == 'TARS_16S' or runtype == 'RNA' or runtype == 'TAG_SEQUENCING':
-      config['nonduplicates'] = 'No'
-      config['padtargets'] = '0'
-    else:
-      config['sampleid'] = 'No'
+      config['launch_mode'] = 'Autostart with default configuration'
   else:
-    raise Exception("CATCH:Automated analysis requires a Plan to specify Run Type.")    
+    config['librarytype'] = 'GENS'
+    config['librarytype_id'] = 'Generic Sequencing'
+    config['launch_mode'] = 'Autostart with no plan'
+  furbishPluginParams()
 
 
 def furbishPluginParams():
   '''Additional parameter set up for configured and semi-configured runs.'''
   config = pluginParams['config']
-  # HTML form posts typically do not add unchecked options...
-  if 'barcodebeds' not in config: config['barcodebeds'] = 'No'
-  if 'sampleid' not in config: config['sampleid'] = 'No'
-  if 'uniquemaps' not in config: config['uniquemaps'] = 'No'
-  if 'nonduplicates' not in config: config['nonduplicates'] = 'No'
-  if 'minalignlen' not in config: config['minalignlen'] = '0'
-  if 'minmapqual' not in config: config['minmapqual'] = '0'
+  config.setdefault('targetregions','')
+  config.setdefault('targetregions_id','None')
+  config.setdefault('barcodetargetregions','')
+  config['barcodebeds'] = 'Yes' if config.get('barcodebeds',False) else 'No'
+  config['sampleid'] = 'Yes' if config.get('sampleid',False) else 'No'
+  config['uniquemaps'] = 'Yes' if config.get('uniquemaps',False) else 'No'
+  config.setdefault('sampleid','No')
+  config.setdefault('padtargets','0')
+  config.setdefault('minalignlen','0')
+  config.setdefault('minmapqual','0')
+  config.setdefault('covdepth1','20')
+  config.setdefault('covdepth2','100')
+  config.setdefault('covdepth3','500')
+  # for past and future use
+  config['trimreads'] = 'No'
+  # for defaults that depend on runtype
+  runtype = config['librarytype']
+  if not 'nonduplicates' in config:
+    config['nonduplicates'] = 'Yes' if runtype == 'GENS' or runtype == 'TARS' or runtype == 'WGNM' else "No"
 
 
 def configReport():
@@ -133,14 +113,17 @@ def configReport():
   return {
     "Launch Mode" : config['launch_mode'],
     "Library Type" : config['librarytype_id'],
-    "Reference Genome" : pluginParams['genome_id'],
-    "Targeted Regions" : config['targetregions_id'],
+    "Reference Genome" : "Barcode specific" if pluginParams['ref_barcode_specific'] else pluginParams['genome_id'],
+    "Targeted Regions" : "Barcode specific" if pluginParams['trg_barcode_specific'] else config['targetregions_id'],
     "Sample Tracking" : config['sampleid'],
     "Target Padding" : config['padtargets'],
     "Use Only Uniquely Mapped Reads" : config['uniquemaps'],
     "Use Only Non-duplicate Reads" : config['nonduplicates'],
     "Min Aligned Length" : config['minalignlen'],
     "Min Mapping Quality" : config['minmapqual'],
+    "Tier 1 Coverage Depth" : config['covdepth1'],
+    "Tier 2 Coverage Depth" : config['covdepth2'],
+    "Tier 3 Coverage Depth" : config['covdepth3'],
     "barcoded" : "true" if pluginParams['barcoded'] else "false"
   }
 
@@ -174,6 +157,9 @@ def printStartupMessage():
   printlog('  Non-duplicate:    %s' % config['nonduplicates'])
   printlog('  Min Align Length: %s' % config['minalignlen'])
   printlog('  Min Map Quality:  %s' % config['minmapqual'])
+  printlog('  Tier 1 Coverage:  %s' % config['covdepth1'])
+  printlog('  Tier 2 Coverage:  %s' % config['covdepth2'])
+  printlog('  Tier 3 Coverage:  %s' % config['covdepth3'])
   printlog('')
 
 
@@ -191,9 +177,9 @@ def run_plugin(skiprun=False,barcode=""):
 
   # use nucType and targets to distinguish barcode-specific run-types
   bedfile = barcodeData['bedfile']
-  if librarytype == 'AMPS_DNA_RNA':
+  if '_DNA_RNA' in librarytype or 'MIXED' in librarytype:
     librarytype = 'AMPS_RNA' if barcodeData['nuctype'] == 'RNA' else 'AMPS'
-  elif librarytype == 'RNA' and bedfile != '':
+  elif 'RNA' in librarytype and bedfile != '':
     librarytype = 'AMPS_RNA'
 
   # link from source BAM since pipeline uses the name as output file stem
@@ -202,18 +188,24 @@ def run_plugin(skiprun=False,barcode=""):
   createlink(barcodeData['bamfile']+'.bai',linkbam+'.bai')
   bamfile = linkbam
 
-  # Run-type flags used to customize the detailed (barcode) report
+  # Run-type flags used here to run options and customize the detailed (barcode) report
+  # - renderOptions() does near equivalent for summary reports
   samp_track = (config['sampleid'] == 'Yes')
   trg_stats = (bedfile != "")
   amp_stats = (trg_stats and pluginParams['is_ampliseq'])
-  rna_stats = (librarytype == 'AMPS_RNA' or librarytype == 'RNA')
-  chr_stats = (librarytype == 'RNA' and not trg_stats)
+  rna_stats = ('RNA' in librarytype)
+  chr_stats = ('RNA' in librarytype and not trg_stats)
   wgn_stats = ((librarytype == 'WGNM' or librarytype == 'GENS') and not trg_stats)
   bas_stats = ((wgn_stats or trg_stats) and not rna_stats)
   trg_type = 1 if amp_stats else 0
   if rna_stats: trg_type = 2
   if chr_stats: trg_type = 3
   if wgn_stats: trg_type = 4
+
+  covdepth1 = config['covdepth1']
+  covdepth2 = config['covdepth2']
+  covdepth3 = config['covdepth3']
+  covDepths = "%s,%s,%s" % (covdepth1,covdepth2,covdepth3)
 
   # Check sample tracking is appropriate to reference and set path to sample ID target BED file
   sampleidBed = ''
@@ -254,9 +246,9 @@ def run_plugin(skiprun=False,barcode=""):
     if config['nonduplicates'] == 'Yes': filtopts += ' -d'
     rptopt = '-R coverageAnalysis.html' if pluginParams['cmdOptions'].cmdline else ''
     printtime("Running coverage analysis pipeline...")
-    runcmd = '%s %s %s %s -D "%s" -A "%s" -B "%s" -C "%s" -L "%s" -M %s -N "%s" -P %s -Q %s -S "%s" %s "%s" "%s"' % (
+    runcmd = '%s %s %s %s -D "%s" -A "%s" -B "%s" -C "%s" -K "%s" -L "%s" -M %s -N "%s" -P %s -Q %s -S "%s" %s "%s" "%s"' % (
         os.path.join(plugin_dir,'run_coverage_analysis.sh'), pluginParams['logopt'], ampopt,
-        filtopts, output_dir, annoBed, mergeBed, bedfile, genomeUrl, config['minalignlen'],
+        filtopts, output_dir, annoBed, mergeBed, bedfile, covDepths, genomeUrl, config['minalignlen'],
         sample, config['padtargets'], config['minmapqual'], sampleidBed, rptopt, reference, bamfile )
     if logopt: printlog('\n$ %s\n'%runcmd)
     if( os.system(runcmd) ):
@@ -283,6 +275,27 @@ def run_plugin(skiprun=False,barcode=""):
   statsfile = output_prefix+'.stats.cov.txt'
   resultData = parseToDict( os.path.join(output_dir,statsfile), ":" )
 
+  # Copy user coverage tier keys to hidden keys for the report (so not seen in results.json)
+  targs_covTier1 = targs_covTier2 = targs_covTier3 = "NA"
+  if not (chr_stats or wgn_stats):
+    if amp_stats:
+      targs_covTier1 = resultData.get("Amplicons with at least %s reads"%covdepth1,"NA")
+      targs_covTier2 = resultData.get("Amplicons with at least %s reads"%covdepth2,"NA")
+      targs_covTier3 = resultData.get("Amplicons with at least %s reads"%covdepth3,"NA")
+    elif trg_stats:
+      targs_covTier1 = resultData.get("Targets with base coverage at %sx"%covdepth1,"NA")
+      targs_covTier2 = resultData.get("Targets with base coverage at %sx"%covdepth2,"NA")
+      targs_covTier3 = resultData.get("Targets with base coverage at %sx"%covdepth3,"NA")
+  bases_covTier1 = bases_covTier2 = bases_covTier3 = "NA"
+  if wgn_stats:
+    bases_covTier1 = resultData.get("Genome base coverage at %sx"%covdepth1,"NA")
+    bases_covTier2 = resultData.get("Genome base coverage at %sx"%covdepth2,"NA")
+    bases_covTier3 = resultData.get("Genome base coverage at %sx"%covdepth3,"NA")
+  elif trg_stats:
+    bases_covTier1 = resultData.get("Target base coverage at %sx"%covdepth1,"NA")
+    bases_covTier2 = resultData.get("Target base coverage at %sx"%covdepth2,"NA")
+    bases_covTier3 = resultData.get("Target base coverage at %sx"%covdepth3,"NA")
+
   # Collect other output data to pluginReport, which is anything else that is used to generate the report
   trgtype = '.target.cov'
   if amp_stats or librarytype == 'RNA': trgtype = '.amplicon.cov'
@@ -303,6 +316,15 @@ def run_plugin(skiprun=False,barcode=""):
     "wgn_stats" : wgn_stats,
     "bas_stats" : bas_stats,
     "trg_type" : trg_type,
+    "covdepth1" : covdepth1,
+    "covdepth2" : covdepth2,
+    "covdepth3" : covdepth3,
+    "targs_covTier1" : targs_covTier1,
+    "targs_covTier2" : targs_covTier2,
+    "targs_covTier3" : targs_covTier3,
+    "bases_covTier1" : bases_covTier1,
+    "bases_covTier2" : bases_covTier2,
+    "bases_covTier3" : bases_covTier3,
     "help_dict" : helpDictionary(),
     "stats_txt" : checkOutputFileURL(statsfile),
     "overview_png" : checkOutputFileURL(output_prefix+'.covoverview.png'),
@@ -532,19 +554,20 @@ def renderOptions():
     filter_options.append('Minimum aligned length = %d'%int(config['minalignlen']))
   if config['minmapqual'] and int(config['minmapqual']):
     filter_options.append('Minimum mapping quality = %d'%int(config['minmapqual']))
-  trg_stats = config['targetregions_id'] != 'None'
+  trg_stats = config['targetregions_id'] != 'None' or pluginParams['trg_barcode_specific']
+  mixed = "_DNA_RNA" in librarytype or 'MIXED' in librarytype
   return {
     "runType" : librarytype,
     "library_type" : config['librarytype_id'],
-    "target_regions" : config['targetregions_id'],
+    "target_regions" : "Barcode specific" if pluginParams['trg_barcode_specific'] else config['targetregions_id'],
     "target_padding" : config['padtargets'],
     "filter_options" : ', '.join(filter_options),
     "samp_track" : (config['sampleid'] == 'Yes'),
-    "mixed_stats" : (librarytype == "AMPS_DNA_RNA"),
-    "chr_stats" : (librarytype == "RNA" and not trg_stats),
+    "mixed_stats" : ("_DNA_RNA" in librarytype or 'MIXED' in librarytype),
+    "chr_stats" : ("RNA" in librarytype and not trg_stats),
     "wgn_stats" : (librarytype == 'WGNM' or librarytype == 'GENS'),
     "trg_stats" : trg_stats,
-    "bas_stats" : (librarytype != 'AMPS_RNA' and librarytype != 'RNA')
+    "bas_stats" : (mixed or "RNA" not in librarytype)
   }
   
 
@@ -864,25 +887,46 @@ def loadPluginParams():
 
   # set up plugin specific options depending on auto-run vs. plan vs. GUI
   config = pluginParams['config'] = jsonParams['pluginconfig'].copy() if 'pluginconfig' in jsonParams else {}
-  launchmode = config.get('launch_mode','')
-  pluginParams['manual_run'] = launchmode == 'Manual'
+  pluginParams['manual_run'] = config.get('launch_mode','') == 'Manual'
   if pluginParams['manual_run']:
     furbishPluginParams()
-  elif 'plan' in jsonParams:
-    # assume that either plan.html or config.html has partially defined the config if launch_mode is defined
-    if launchmode:
-      furbishPluginParams()
-    else:
-      config['launch_mode'] = 'Autostart with plan configuration'
-    addAutorunParams(jsonParams['plan'])
   else:
-    config['launch_mode'] = 'Autostart with default configuration'
-    addAutorunParams()
+    addAutorunParams(jsonParams.get('plan',None))
 
+  # preset some (library) dependent flags and ensure fixed (hidden) option defaults
+  runtype = config['librarytype']
+  pluginParams['is_ampliseq'] = (runtype[:4] == 'AMPS' or runtype == 'TARS_16S' or runtype == 'TAG_SEQUENCING' or runtype == 'MIXED')
+  pluginParams['allow_no_target'] = (runtype == 'GENS' or runtype == 'WGNM' or runtype == 'RNA')
+  if pluginParams['is_ampliseq']:
+    config['nonduplicates'] = 'No'
+    config['padtargets'] = '0'
+  else:
+    config['sampleid'] = 'No'
+  if runtype == 'RNA':
+    config['nonduplicates'] = 'No'
+    config['padtargets'] = '0'
+
+  # (re)validate that numeric inputs really are, until plan.html can perform pre-validation
+  isInt = re.compile("^\d+$")
+  if not isInt.match(config['padtargets']):
+    raise Exception("CATCH: Invalid option value for Target Padding: "+config['padtargets'])
+  if not isInt.match(config['minalignlen']):
+    raise Exception("CATCH: Invalid option value for Minimum Aligned Length: "+config['minalignlen'])
+  if not isInt.match(config['minmapqual']):
+    raise Exception("CATCH: Invalid option value for Minimum Mapping Quality: "+config['minmapqual'])
+  if not isInt.match(config['covdepth1']) or int(config['covdepth1']) <= 1:
+    raise Exception("CATCH: Invalid option value for Tier 1 Coverage Depth: "+config['covdepth1'])
+  if not isInt.match(config['covdepth2']) or int(config['covdepth2']) <= int(config['covdepth1']):
+    raise Exception("CATCH: Invalid option value for Tier 2 Coverage Depth: "+config['covdepth2'])
+  if not isInt.match(config['covdepth3']) or int(config['covdepth3']) <= int(config['covdepth2']):
+    raise Exception("CATCH: Invalid option value for Tier 3 Coverage Depth: "+config['covdepth3'])
+  
   # store manual target overrides to dictionary: must be done before call to barcodeSpecifics()
   pluginParams['target_files'] = targetFiles()
 
   # scan barcodes to check number genome/targets - mainly for log header
+  ref_bs = False
+  trg_bs = False
   if pluginParams['barcoded']:
     genome_id = '.'
     target_id = '.'
@@ -892,11 +936,11 @@ def loadPluginParams():
       if target_id == '.':
         target_id = barcodeData['bedfile']
       elif target_id != barcodeData['bedfile']:
-        target_id = "Barcode specific"
+        trg_bs = True
       if genome_id == '.':
         genome_id = barcodeData['reference']
       elif genome_id != barcodeData['reference']:
-        genome_id = "Barcode specific"
+        ref_bs = True
         break
   else:
     barcodeData = barcodeSpecifics(NONBARCODED)
@@ -907,13 +951,10 @@ def loadPluginParams():
   target_id = os.path.basename(target_id)
   if target_id[-4:] == ".bed": target_id = target_id[:-4]
   config['targetregions_id'] = target_id if target_id else 'None'
-  config['barcodebeds'] = "Yes" if target_id == "Barcode specific" else "No"
+  config['barcodebeds'] = "Yes" if trg_bs else "No"
+  pluginParams['ref_barcode_specific'] = ref_bs
+  pluginParams['trg_barcode_specific'] = trg_bs
  
-  # preset some (library) dependent flags
-  runtype = config['librarytype']
-  pluginParams['is_ampliseq'] = (runtype[:4] == 'AMPS' or runtype == 'TARS_16S' or runtype == 'TAG_SEQUENCING')
-  pluginParams['allow_no_target'] = (runtype == 'GENS' or runtype == 'WGNM' or runtype == 'RNA')
-
   # early catch for unsuitable setup - to approximate 5.0 behavior
   if pluginParams['genome_id'].lower == 'none':
     raise Exception("CATCH: Cannot run plugin without reads aligned to any reference.")
@@ -1097,15 +1138,15 @@ def runForBarcodes():
 def checkBarcode(barcode):
   '''Checks if a specific barcode is set up correctly for analysis.'''
   barcodeData = barcodeSpecifics(barcode) 
+  err = checkTarget( barcodeData['bedfile'], barcodeData['bamfile'] )
+  if err: return err
   if barcodeData['filtered']:
     return "ERROR: Filtered (not enough reads)"
   if not barcodeData['reference']:
     return "ERROR: Analysis requires alignment to a reference"
-  if not os.path.exists(barcodeData['bamfile']):
-    return "ERROR: BAM file not found at " + barcodeData['bamfile']
   if os.stat(barcodeData['bamfile']).st_size < pluginParams['cmdOptions'].minbamsize:
     return "ERROR: BAM file too small"
-  return checkTarget( barcodeData['bedfile'], barcodeData['bamfile'] )
+  return ""
 
 def checkTarget(bedfile,bamfile):
   '''Checks that the given target is valid for library type, etc. Return error msg or "".'''
@@ -1122,6 +1163,9 @@ def checkTarget(bedfile,bamfile):
     elif disallow_no_target:
       return "No default target regions for barcode."
     bedfile = default_bedfile
+  # to catch the more serious but anticipated error check BAM file exists first
+  if not os.path.exists(bamfile):
+    return "ERROR: BAM file not found at " + bamfile
   ckbb = checkBamBed(bamfile,bedfile)
   if ckbb:
     # signal a more serious error to be reported in the main report against the barcode

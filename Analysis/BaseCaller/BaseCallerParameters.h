@@ -78,6 +78,7 @@ struct BaseCallerFiles
 
     string    lib_datasets_file;      //!< Datasets file containing all the barcodes that are used in the run
     string    calibration_panel_file; //!< Datasets file containing the barcodes that are used for calibration panel
+    Json::Value read_structure;
 
     bool      options_set;            //!< Flag whether options have been read to ensure order
 };
@@ -145,7 +146,7 @@ struct BaseCallerContext {
     string                    flow_signals_type;      //!< The flow signal type: "default" - Normalized and phased, "wells" - Raw values (unnormalized and not dephased), "key-normalized" - Key normalized and not dephased, "adaptive-normalized" - Adaptive normalized and not dephased, and "unclipped" - Normalized and phased but unclipped.
     string                    output_directory;       //!< Root directory for all output files
     string                    wells_norm_method;      //!< Normalization method for wells file before any processing
-    bool                      flow_predictors_;       //!< If set to false, TF-related BAM will not be generated
+    bool                      flow_predictors_;       //!< If set to true, flow space quality score will be enabled
     bool                      process_tfs;            //!< If set to false, TF-related BAM will not be generated
     int                       windowSize;             //!< Normalization window size
     bool                      have_calibration_panel; //!< Signales the presence of a recalibration panel
@@ -168,6 +169,7 @@ struct BaseCallerContext {
     BaseCallerMetricSaver     *metric_saver;          //!< Saves requested metrics to an hdf5
     BarcodeClassifier         *barcodes;              //!< Barcode detection and trimming
     BarcodeClassifier         *calibration_barcodes;  //!< Barcode detection for calibration set
+    EndBarcodeClassifier      *end_barcodes;          //!< Read end barcode detection and trimming
     HistogramCalibration      *histogram_calibration; //!< Posterior base call and signal adjustment algorithm
     LinearCalibrationModel    *linear_cal_model;      //!< Model estimation of simulated predictions and observed measurements
     MolecularTagTrimmer       *tag_trimmer;           //!< Class for tag accounting within read groups
@@ -217,6 +219,8 @@ public:
     bool JustPhaseEstimation() { return context_vars.just_phase_estimation; };
 
     bool CompressOutputBam() { return compress_output_bam_; };
+
+    Json::Value NormalizeDictStructure(Json::Value structure);
 
 
     const BaseCallerFiles & GetFiles() const {

@@ -45,7 +45,7 @@ class Sample(object):
 
         self._has_scaffolds_cache = {}
 
-        params = self._info['pluginconfig']
+        params = self._info['params']
         self._assembly_settings['Fraction of Reads Used'] = \
             params.get('fraction_of_reads') or '1.0'
         self._assembly_settings['RAM'] = params.get('RAM') or '24G'
@@ -215,7 +215,7 @@ def _linksToDownloads(sample, assembler):
                                     index = 0
                                     downloads = sample.downloads(assembler)
                                     for descr, url in downloads.items():
-                                        rurl = os.path.relpath(url, DIRNAME)
+                                        rurl = os.path.relpath(url)
                                         index += 1
                                         if index % 5 != 1:
                                             h.UNESCAPED(("&nbsp;&nbsp;|"

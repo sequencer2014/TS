@@ -32,7 +32,7 @@ def write_alleles2_line(options, fid, **kwargs):
                                         if header else allele['is_ppa'])                + '\t')
     fid.write(('Quality'                if header else allele['qual'])                  + '\t')
     fid.write(('Filter'                 if header else allele['qual_filter'])           + '\t')
-    if (options.library_type == "tagseq"):
+    if (options.library_type in ["tagseq", "ampliseq_hd"]):
         fid.write(('LOD'                if header else allele['LOD'])                   + '\t')
 
     # Extra fields displayed only in Allele Search view
@@ -50,8 +50,11 @@ def write_alleles2_line(options, fid, **kwargs):
     
     # Extra fields displayed only in Coverage Filters view
 
-    if (options.library_type == "tagseq"):
+    if (options.library_type in ["tagseq", "ampliseq_hd"]):
         fid.write(('Read Cov'               if header else allele['read_cov'])       + '\t')
+        if options.library_type == "ampliseq_hd":
+            fid.write(('Read Cov+'        if header else allele['read_cov_plus'])       + '\t')
+            fid.write(('Read Cov-'        if header else allele['read_cov_minus'])       + '\t')        
         fid.write(('Allele Read Cov'        if header else allele['allele_read_cov'])       + '\t')
         fid.write(('Allele Read Freq'       if header else allele['allele_read_freq'])       + '\t')
         fid.write(('Mol Coverage'           if header else allele['mol_coverage'])            + '\t')
@@ -315,13 +318,7 @@ def main():
         if line.startswith('#CHROM'):
             fields = line.split('\t')
             if len(fields) > 9:
-                sample_name = ""
-                elements = fields[9].strip().split('.')
-                for index in range(0, max(1, len(elements) - 2)):
-                    if len(sample_name) > 0:
-                        sample_name += "."
-                    sample_name += elements[index]
-                summary_json['sample_name'] = sample_name
+                summary_json['sample_name'] = fields[9].strip()
         if line[0]=='#':
             continue
 
@@ -332,6 +329,8 @@ def main():
         id = fields[2]
         ref = fields[3]
         alt = fields[4].split(',')
+        # Sanity check: every alt allele should be unique.
+        assert(len(alt) == len(set(alt)))
         qual = fields[5]
         info = {}
         for item in fields[7].split(';'):
@@ -429,8 +428,8 @@ def main():
         total_cov = DP
         total_f_cov = FDP # In tvc, MRO = FRO, MAO = FAO
         var_freq = [100.0 * float(v)/float(total_cov) if total_cov > 0 else 0.0 for v in AO]
-        # f_var_freq = [100.0 * float(v)/float(total_f_cov) if total_f_cov > 0 else 0.0 for v in FAO]
-        f_var_freq = [100.0 * f for f in AF] # TS-14592        
+        f_var_freq = [100.0 * float(v)/float(total_f_cov) if total_f_cov > 0 else 0.0 for v in FAO]
+        #f_var_freq = [100.0 * f for f in AF] # TS-14592        
         output_xls.write("%s\t%s\t" % (chr,pos)) # Chrom, Position
         output_xls.write("%s\t%s\t" % (gene_name,region_id)) # Gene Sym, Target ID
         output_xls.write("%s\t%s\t%s\t" % (variant_type,ploidy,genotype_actual)) # Type, Zygosity
@@ -458,15 +457,16 @@ def main():
         frs = [fr for fr in FR.split(',') if not (fr.startswith('SKIPREALIGNx') or fr.startswith('REALIGNEDx') or fr.startswith('HEALED'))]
         oid_dict = {}
 
+        # Create the oid_dict that maps an allele to its oid
         for oid,opos,oref,oalt,omapalt in zip(all_oid,all_opos,all_oref,all_oalt,all_omapalt):
-            if omapalt not in alt:
-                continue
-            idx = alt.index(omapalt)
-            key = str(opos) + ":" + oref + ":" + oalt + ":" + str(idx)
+            #if omapalt not in alt:
+            #    continue
+            idx = alt.index(omapalt)  # I let it crash if omapalt not in alt
+            key = "%s:%s:%s:%d" %(opos, oref, oalt, idx) 
             if oid != ".":
                 if key in oid_dict:
                     if oid_dict[key] != "":
-                        oid_dict[key] += "," + oid
+                        oid_dict[key] += ",%s" %oid
                     else:
                         oid_dict[key] = oid
                 else:
@@ -475,31 +475,27 @@ def main():
                 oid_dict[key] = ""
         
         if is_report_subset:
-            allele_name_list = []
-            for oid in all_oid:
-                if oid in ['', '.']:
+            # allele_name_list[i] is the allele name of the i-th alt allele.
+            allele_name_list = ['' for i in xrange(len(alt))]
+            for my_key, my_oid in oid_dict.iteritems():
+                # my_key is in the format of "%s:%s:%s:%d" %(opos, oref, oalt, idx)
+                my_idx = int(my_key.split(':')[-1])
+                if my_oid == '':
                     novel_counter_for_subset += 1
-                    # I need allele name for subset.
-                    allele_name_list.append('tvc.novel.%d' %novel_counter_for_subset)
+                    allele_name_list[my_idx] = 'tvc.novel.%d' %novel_counter_for_subset                    
                 else:
-                    allele_name_list.append(oid)
+                    allele_name_list[my_idx] = my_oid
         
         for oid,opos,oref,oalt,omapalt in zip(all_oid,all_opos,all_oref,all_oalt,all_omapalt):
-            if omapalt not in alt:
+            #if omapalt not in alt:
+            #    continue
+            idx = alt.index(omapalt) # I let it crash if omapalt not in alt
+            key = "%s:%s:%s:%d" %(opos, oref, oalt, idx) 
+            oid = oid_dict.pop(key, None)
+            if oid is None:
                 continue
-            idx = alt.index(omapalt)
-
-            key = str(opos) + ":" + oref + ":" + oalt + ":" + str(idx)
-            if key not in oid_dict:
-                continue
-            oid = oid_dict[key]
-            del oid_dict[key]
             if oid == "":
                 oid = "."
-
-            if (options.suppress_no_calls == "on"):
-                if oid == '.' and genotype1_int != (idx+1) and genotype2_int != (idx+1):
-                    continue
 
             allele = {}
             allele['chrom']             = chr
@@ -519,7 +515,7 @@ def main():
             allele['run_name']          = options.run_name if options.run_name else 'N/A'
 
             if is_report_ppa:
-                allele['is_ppa'] = '1' if str(idx + 1) in PPA else '0' 
+                allele['is_ppa'] = '1' if (str(idx + 1) in PPA and (str(idx + 1) not in genotype_parts) and genotype != './.') else '0' 
             
             if is_report_subset:
                 allele['name'] = allele_name_list[idx]
@@ -528,6 +524,11 @@ def main():
                     allele['subset_of'] = ','.join(my_super_sets)
                 else:
                     allele['subset_of'] = '---'
+
+            if (options.suppress_no_calls == "on"):
+                # Let the allele in if it is PPA.
+                if oid == '.' and genotype1_int != (idx+1) and genotype2_int != (idx+1) and allele.get('is_ppa', '0') != '1':
+                    continue
                 
             ref_len = len(oref.strip('-'))
             alt_len = len(oalt.strip('-'))
@@ -569,8 +570,11 @@ def main():
                 summary_json['variants_by_source']['hotspot'] += 1
 
             # Again note that in tagseq, MDP = FDP, MAO = FAO, MRO = FRO            
-            if (options.library_type == "tagseq"):
+            if options.library_type in ["tagseq", "ampliseq_hd"]:
                 allele['read_cov']                  = '%d'      % (DP)
+                if options.library_type == "ampliseq_hd":
+                    allele['read_cov_plus']  = '%d'      % (SRF + sum(SAF))
+                    allele['read_cov_minus'] = '%d'      % (SRR + sum(SAR))              
                 allele['allele_read_cov']           = '%d'      % (AO[idx])
                 allele['allele_read_freq']          = '%1.3f'   % (100.0 * AO[idx] / DP if (DP) > 0.0 else 0.0)
                 allele['mol_coverage']              = '%d'      % (FDP)
@@ -583,6 +587,7 @@ def main():
                 allele['cov_total']                 = '%d'      % (DP)
                 # Quick fix for TS-15029
                 # If a tvc call and a indel_assembly call are merged in one vcf record, then the indel_assembly allele has FAO='.'
+                # Note: It is redundant in 5.10 because tvcutils no longer merge the tvc and indel assembly records. 
                 if 'FAO' in info:
                     is_called_by_tvc= info['FAO'][idx] != '.'
                 else:
@@ -593,8 +598,8 @@ def main():
                 allele['cov_allele']                = '%d'      % (FAO[idx])
                 allele['cov_allele_plus']           = '%d'      % (FSAF[idx])
                 allele['cov_allele_minus']          = '%d'      % (FSAR[idx])
-                #allele['freq']                      = '%1.1f'   % (100.0 * FAO[idx] / FDP if FDP > 0.0 else 0.0)            
-                allele['freq']                      = '%1.1f'   % (100.0 * AF[idx]) # TS-14592
+                allele['freq']                      = '%1.1f'   % (100.0 * FAO[idx] / FDP if FDP > 0.0 else 0.0)            
+                #allele['freq']                      = '%1.1f'   % (100.0 * AF[idx]) # TS-14592
 
             allele['LOD']                       = '%1.2f'   % (100.0 * float(LOD[idx]))                
             allele['strand_bias']               = '%1.4f'   % (STB[idx])
@@ -657,7 +662,7 @@ def main():
                 allele['sse_plus_filter'] = 'Context error on both strands'
                 allele['sse_minus_filter'] = 'Context error on both strands'
 
-            if (options.library_type == "tagseq"):
+            if (options.library_type in ["tagseq", "ampliseq_hd"]):
                 allele['mol_coverage_filter']      = ('Minimum coverage ('+allele_prefix+')') if 'MINCOV' in fr or 'NODATA' in fr else '-'                
                 if 'VARCOV<' in fr:
                     allele['allele_mol_cov_filter'] = 'Minimum variant mol coverage'

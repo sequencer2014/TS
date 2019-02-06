@@ -163,6 +163,7 @@ INSTALLED_APPS = (
     'iondb.ftpserver',
     'iondb.rundb',
     'iondb.security',
+    'iondb.product_integration',
     'tastypie',
     'south',
 )
@@ -182,7 +183,7 @@ IONAUTH_ALLOW_REST_GET = False
 TASTYPIE_DEFAULT_FORMATS = ['json', 'jsonp']
 
 LOGIN_URL = "/login/"
-LOGIN_REDIRECT_URL = "/data/"
+LOGIN_REDIRECT_URL = "/home/"
 # Whether to expire the session when the user closes his or her browser.
 # See "Browser-length sessions vs. persistent sessions", https://docs.djangoproject.com/en/dev/topics/http/sessions/#browser-length-sessions-vs-persistent-sessions
 SESSION_EXPIRE_AT_BROWSER_CLOSE = True
@@ -225,6 +226,11 @@ LOGGING = {
             'filename': '/var/log/ion/data_management.log',
             'formatter': 'uniqueid',
         },
+        'product_integration': {
+            'class': 'logging.handlers.WatchedFileHandler',
+            'filename': '/var/log/ion/product_integration.log',
+            'formatter': 'standard',
+        },
     },
     'filters': {
         'require_debug_false': {
@@ -249,12 +255,23 @@ LOGGING = {
             'level': 'DEBUG',
             'propagate': False
         },
+        'iondb.product_integration': {
+            'handlers': ['product_integration'],
+            'level': 'DEBUG',
+            'propagate': False
+        },
         # When DEBUG is True, django.db will log every SQL query.  That is too
         # much stuff that we don't normally need, so it's logged elsewhere.
         'django.db': {
             'handlers': ['default'],
             'level': 'INFO',
             'propagate': False
+        },
+        'django.request': {
+            'propagate': True,
+        },
+        'django.security': {
+            'propagate': True,
         },
         'data_management': {
             'handlers': ['data_management'],
@@ -347,8 +364,8 @@ SUPPORTED_INSTALL_PACKAGES = [
 
 EULA_TEXT_URL = "products/LICENSE.txt"
 
-PLAN_CSV_VERSION = "2.0"
-SUPPORTED_PLAN_CSV_VERSION = ["1.0","2.0"]
+PLAN_CSV_VERSION = "2.1"
+SUPPORTED_PLAN_CSV_VERSION = ["1.0","2.0","2.1"]
 SAMPLE_CSV_VERSION = "1.0"
 SUPPORTED_SAMPLE_CSV_VERSION = ["1.0"]
 
@@ -377,7 +394,7 @@ CACHES = {
     },
     'file': {
         'BACKEND': 'django.core.cache.backends.filebased.FileBasedCache',
-        'LOCATION': '/var/spool/ion',
+        'LOCATION': '/var/spool/ion/djcache',
     }
 }
 NOSE_ARGS = ['--nocapture', '--nologcapture', ]

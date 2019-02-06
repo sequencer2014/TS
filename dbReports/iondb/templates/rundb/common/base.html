@@ -50,7 +50,7 @@
     <link href="{% static "resources/kendo/styles/kendo.common.min.css"%}" rel="stylesheet" />
     <link href="{% static "resources/kendo/styles/kendo.bootstrap.min.css"%}" rel="stylesheet" />
     {% block extra_head_styles %}{% endblock extra_head_styles %}
-
+    <link rel="stylesheet" href="{% static "resources/font-awesome/css/font-awesome.min.css"%}">
     <link type="text/css" rel="stylesheet" href="{% static "resources/styles/tb-layout.min.css"%}" />
     <link type="text/css" rel="stylesheet" href="{% static "resources/styles/tb-styles.min.css"%}" />
     <link type="text/css" rel="stylesheet" href="{% static "css/yamm.css"%}" />
@@ -147,6 +147,9 @@
                 {% block nav %}
                     <div class="">
                     <ul class=" nav nav-tabs pull-left">
+                        <li id="home-menu" class="{% block home_menu %}{% endblock %}">
+                            <a href="{% url "dashboard" %}" class="nav-tab">Home</a>
+                        </li>
                         <li id="plan-menu" class="{% block plan_menu %}{% endblock %}">
                             <a href="{% url "plan" %}" class="nav-tab">Plan</a>
                         </li>
@@ -158,21 +161,20 @@
                         </li>
                     </ul>
                     <ul class="nav nav-tabs pull-right" id="configureNav">
-                        <li class="{% block news_menu %}{% endblock %}"><a href="{% url 'news' %}" class="nav-tab">News{% if unread_news %} <span class="badge badge-dark" style="margin-left: 3px; line-height:10px;">{{ unread_news }}</span>{% endif %}</a></li>
                         <li id="configure-menu" class="dropdown {% block configure_menu %}{% endblock %}">
                             <a id="configure" class="dropdown-toggle nav-tab" data-toggle="dropdown" data-target="#" href="{% url "configure_about" %}">
                             <div id="gear" class="gear-inactive"><b class="caret"></b></div>
                             </a>
                             <ul class="dropdown-menu">
                                 <li><a href="{% url "configure_about" %}">About</a></li>
+                                <li><a href="{% url "configure_account" %}">Accounts</a></li>
                                 <li><a href="{% url "configure_analysisargs" %}">Analysis Parameters</a></li>
+                                <li><a href="{% url "configure_configure" %}">Configure</a></li>
+                                <li><a href="{% url "configure_mesh" %}">Ion Mesh</a></li>
+                                <li><a href="{% url "configure_ionreporter" %}">Ion Reporter Configure</a></li>
+                                <li><a href="{% url "configure_plugins" %}">Plugins</a></li>
                                 <li><a href="{% url "configure_references" %}">References</a></li>
                                 <li><a href="{% url "configure_services" %}">Services</a></li>
-                                <li><a href="{% url "configure_plugins" %}">Plugins</a></li>
-                                <li><a href="{% url "configure_mesh" %}">Ion Mesh</a></li>
-                                <li><a href="{% url "configure_configure" %}">Configure</a></li>
-                                <li><a href="{% url "configure_ionreporter" %}">Ion Reporter Configure</a></li>
-                                <li><a href="{% url "configure_account" %}">Accounts</a></li>
                                 <li><a href="{% url "offcycle_updates" %}">Updates</a></li>
                             </ul>
                         </li>
@@ -184,7 +186,7 @@
     </div>
 </div>
 <div class="sub-nav">
-    <div class="container-fluid">
+    <div class="container-fluid" style="position: absolute">
         <div class="row-fluid">
             <div class="span12">
                 <ul class="nav">
@@ -222,7 +224,7 @@
                 <img class="pull-left" src="{% static "resources/img/ion-by-thermo-logo-125px.png"%}" border="0">
                 <div class="pull-right">
                     <p>For Research Use Only. Not for use in diagnostic procedures.</p>
-                    <p><span class="copyright">&copy; 2017 Thermo Fisher Scientific Inc. All Rights Reserved.</span>
+                    <p><span class="copyright">&copy; 2018 Thermo Fisher Scientific Inc. All Rights Reserved.</span>
                     <a href="http://www.thermofisher.com/us/en/home/technical-resources/contact-us.html">Technical Support</a> |
                     <a href="/licenses/terms-of-use.txt">Terms &amp; Conditions</a>
                     </p>
@@ -234,7 +236,7 @@
 {% block post-raw %}
 {% endblock post-raw %}
 {% include 'rundb/common/modals.html' %}
-{% if user.is_authenticated %}
+{% if user.is_authenticated and not disable_messages %}
 <script>
   $(function(){
     inbox = new MessageBox({models: {{global_messages|safe}} });

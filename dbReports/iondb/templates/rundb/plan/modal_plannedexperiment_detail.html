@@ -86,10 +86,6 @@
 								<td>{{ templatingKit.0.description }}</td>
 							</tr>
                             <tr>
-                                <td><b>Templating Size:</b></td>
-                                <td>{% if plan.templatingSize %}{{ plan.templatingSize }}{%else%}--{%endif%}</td>
-                            </tr>
-                            <tr>
                                 <td><b>Templating Protocol:</b></td>
                                 <td><small>{% if plan.samplePrepProtocol %}{{ samplePrepProtocol.0.displayedValue }}{%else%}(use instrument default){%endif%}</small></td>
                             </tr>                            							
@@ -117,6 +113,12 @@
 								<td><b>Barcode Set:</b></td>
 								<td>{{ eas.barcodeKitName }}</td>
 							</tr>
+							{% if eas.barcodeKitName and eas.endBarcodeKitName %}
+							<tr>
+								<td><b>End Barcode Set:</b></td>
+								<td>{{ eas.endBarcodeKitName }}</td>
+							</tr>
+							{% endif %}
 							<tr>
 								<td><b>Mark as PCR Duplicates:</b></td>
 								<td>{{ eas.isDuplicateReads }}</td>
@@ -168,16 +170,16 @@
 								<td><b>Hotspot Regions:</b></td>
 								<td class="word-break-all">{{ eas.hotSpotRegionBedFile|default:''|basename }}</td>
 							</tr>
-							{% if runType.0.runType == "AMPS_DNA_RNA" %}
+							{% if runType.0.runType == "AMPS_DNA_RNA" or runType.0.runType == "MIXED" %}
 							<tr>
-								<td><b>Fusions Reference Library:</b></td>
+								<td><b>{%if runType.0.runType == "AMPS_DNA_RNA" %}Fusions{% else %}RNA{% endif%} Reference Library:</b></td>
 								<td>{{ eas.mixedTypeRNA_reference }}</td>
 							</tr>
 							<tr>
-								<td><b>Fusions Target Regions:</b></td>
+								<td><b>{%if runType.0.runType == "AMPS_DNA_RNA" %}Fusions{% else %}RNA{% endif%} Target Regions:</b></td>
 								<td class="word-break-all">{{ eas.mixedTypeRNA_targetRegionBedFile|default:''|basename }}</td>
 							</tr>
-							{% endif %}
+							{% endif %}					
 						</table>
 					</div>
 				</div>
@@ -190,17 +192,19 @@
 							<tr>
 								<td><b>Plugins:</b></td>
 								<td>
-									{% for plugin in plugins %}
-										{% if plugin.isPlanConfig %}
-											<a class="plugin_config" href="#configModal" data-href="{{plugin.isPlanConfig}}" data-json="{{plugin.userInputJSON}}">
-										{% endif %}
-										{{plugin.name}}
-										{% if plugin.name == "variantCaller" and plugin.userInput.meta.configuration %}
-											({{ plugin.userInput.meta.configuration}})
-										{% endif %}
-										{% if plugin.isPlanConfig %}</a>{% endif %}
-										{% if not forloop.last %},{% endif %}
-									{% endfor %}
+                                    {% for plugin in plugins %}
+                                        <span class="plugin_config">
+										{{ plugin.name }}
+                                            {% if plugin.isPlanConfig %}
+                                                {% if plugin.name == "variantCaller" and plugin.userInput.meta.configuration %}
+                                                    <small>({{ plugin.userInput.meta.configuration }})</small>
+                                                {% else %}
+                                                    <small>(Configured)</small>
+                                                {% endif %}
+                                            {% endif %}
+                                        </span>
+                                        <br>
+                                    {% endfor %}
 								</td>
 							</tr>
 							<tr>
@@ -340,14 +344,14 @@
 							</tr>
 							{% for barcode in barcodes %}
 								<tr>
-									<td>{{ barcode.id_str }} ({{barcode.sequence}})</td>
-									<td>{{ barcodedSamples|bracket:barcode.id_str|bracket:'sample'|default:'' }}</td>
+									<td>{{ barcode }}</td>
+									<td>{{ barcodedSamples|bracket:barcode|bracket:'sample'|default:'' }}</td>
 									{% for key in bcsamples_columns %}
-										<td>{{ barcodedSamples|bracket:barcode.id_str|bracket:key|default:'' }}</td>
+										<td>{{ barcodedSamples|bracket:barcode|bracket:key|default:'' }}</td>
 									{% endfor %}
 									{% if iru_config %}
 										{% for key in iru_columns %}
-											<td>{{iru_config|bracket:barcode.id_str|bracket:key|default:''}}</td>
+											<td>{{iru_config|bracket:barcode|bracket:key|default:''}}</td>
 										{% endfor %}
 									{% endif %}
 								</tr>
@@ -478,31 +482,10 @@
 	<div class="modal-footer">
 		<a href="#" class="btn" data-dismiss="modal">Close</a>
 	</div>
-	<div id="configModal" class="modal hide" style="position: fixed; margin-top: -250px;">
-		<div class="modal-header">
-			<button id="configModalClose" href="#" type="button" class="close">x</button>
-			<h3 id="configModalLabel">View Plugin Configuration</h3>
-		</div>
-		<div class="modal-body">
-			<iframe width="820" height="350" id="pluginConfigIframe">
-				WARNING: Your browser does not support iFrames.
-			</iframe>
-	   </div>
-    </div>
 	<script type="text/javascript" src="{% static "resources/scripts/planplugins_common.js"%}"></script>
 	<script type="text/javascript">
 		$('.openclose').click(function(){
 			$(this).toggleClass('icon-minus icon-plus');
-		});
-		$('.plugin_config').click(function(e){
-			e.preventDefault();
-			var json_config = $(this).data('json');
-			var pluginIframe = $("#pluginConfigIframe");
-			updateIframe(pluginIframe, $(this).data("href"), json_config);
-			$('#configModal').show();
-		});
-		$("button[id=configModalClose]").click(function(){
-			$('#configModal').hide();
 		});
 	</script>
 </div>

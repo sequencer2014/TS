@@ -45,6 +45,18 @@ class Status:
             text = 'Plan Transfer Errors: \n' + self.error.replace('<p>', '').replace('</p>', '\n')
             EventLog.objects.add_entry(plan, text, username)
 
+def parse_to_string(data, output=""):
+    if isinstance(data, dict):
+        for value in data.values():
+            output = parse_to_string(value, output)
+    elif isinstance(data, list):
+        data.sort()
+        for value in data:
+            output = parse_to_string(value, output)
+    elif isinstance(data, basestring) and data not in output:
+        return output + ' ' + data
+
+    return output
 
 ''' Plan share Destination TS functions '''
 
@@ -361,12 +373,13 @@ def transfer_plan(plan, serialized, server_name, username):
 
     # copy Plan/Experiment/EAS through plannedexperiment API
     r = session.post(session.api_url + 'plannedexperiment/', data=serialized)
+    response = r.json()
     # handle unsuccessful POST
     if not r.ok:
         try:
             status.update(error='Unable to transfer plan %s to Torrent Server %s.' % (plan.planDisplayedName, server_name))
             # parse validation errors
-            errjson = json.loads(r.json()['error'][3:-2])
+            errjson = json.loads(response['error'][3:-2])
             for k, v in errjson.items():
                 status.update(error='Error: %s' % (json.dumps(v)))
             return status.to_dict()
@@ -374,6 +387,17 @@ def transfer_plan(plan, serialized, server_name, username):
             r.raise_for_status()
 
     new_plan_url = r.headers['location']
+
+    if 'Warnings' in response:
+        try:
+            parsed = []
+            for key, warning in response['Warnings'].items():
+                parsed.append(key + ':' + parse_to_string(warning))
+        except:
+            logger.error("Unable to parse warnings from API response")
+            logger.error(traceback.format_exc())
+
+        status.update(error= ' '.join(parsed))
 
     if debug:
         logger.debug('%f s: Plan Transfer POST %s/plannedexperiment/' % (time.time()-starttime, session.api_url))

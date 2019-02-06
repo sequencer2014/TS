@@ -195,7 +195,7 @@ def SGEPluginJob(start_json, hold=False):
         if isCompat:
             launchScript = launcher.createPluginWrapper(launch, start_json)
         else:
-            start_json.update({'command': ["python %s -vv" % launch]})
+            start_json.update({'command': ["python -u %s -vv" % launch]})
             launchScript = launcher.createPluginWrapper(None, start_json)
         launchWrapper = launcher.writePluginLauncher(plugin_output, plugin['name'], launchScript)
         # Returns filename of startpluginjson file, passed to script below
@@ -383,7 +383,8 @@ class PluginServer(object):
                                                   params.get('blockId', ''), params.get('block_dirs', ["."]), plugin_params.get('instance_config', {}))
 
                     # Pass on run_mode (launch source - manual/instance, pipeline)
-                    start_json['runplugin']['run_mode'] = params.get('run_mode', '')
+                    run_mode = params.get('run_mode', '')
+                    start_json['runplugin']['run_mode'] = run_mode
 
                     # add dependency info to startplugin json
                     if p.get('depends') and isinstance(p['depends'], list):
@@ -400,7 +401,15 @@ class PluginServer(object):
 
                     # prepare for launch: updates config, sets pluginresults status, generates api key
                     pr.prepare()
+
+                    # perform the validation of the plugin configuration here
+                    pr.validation_errors = {
+                        'validation_errors': Plugin.validate(p['id'], start_json['pluginconfig'], run_mode)
+                    }
                     pr.save()
+                    if pr.validation_errors.get('validation_errors', list()):
+                        continue
+
                     # update startplugin json with pluginresult info
                     start_json['runinfo']['pluginresult'] = pr.pk
                     start_json['runinfo']['api_key'] = pr.apikey
@@ -416,8 +425,8 @@ class PluginServer(object):
                             plugin_result=pr,
                             run_level=runlevel,
                             grid_engine_jobid=jid,
-                            state = 'Queued',
-                            config = start_json['pluginconfig'],
+                            state='Queued',
+                            config=start_json['pluginconfig'],
                         )
                         prj.save()
 
@@ -431,7 +440,7 @@ class PluginServer(object):
                     else:
                         p.setdefault('block_jid', []).append(jid)
 
-                except:
+                except Exception as exc:
                     logger.error(traceback.format_exc())
                     msg += 'ERROR: Plugin %s failed to launch.\n' % p['name']
                     pr = PluginResult.objects.get(pk=pr.pk)
@@ -490,36 +499,11 @@ class PluginServer(object):
                 logging.debug("jobstatus for %s" % jobid)
                 status = _session.jobStatus(jobid)
                 ret.append(_decodestatus[status])
-            except:
-                logging.error(traceback.format_exc())
+            except Exception as err:
+                logger.error(str(err))
                 ret.append("DRMAA BUG")
 
         return ret if return_list else ret[0]
-
-    def updatePR(self, pk, grid_engine_job_id, state, store, jobid=None):
-        """
-        Because of the Apache security it is hard for crucher nodes to contact the API directly.
-        This method is a simple proxy to update the status of plugins
-        """
-        # update() doesn't trigger special state change behaviors...
-        # return PluginResult.objects.filter(id=pk).update(state=state, store=store)
-        try:
-            # with transaction.atomic():
-
-            # TODO: should do an explicit check for the database object in case it's been deleted
-            pr = PluginResult.objects.get(id=pk)
-            if state is not None:
-                pr.SetState(state, grid_engine_job_id, jobid)
-
-            if store is not None:
-                # Validate JSON?
-                pr.store = store
-                pr.save(update_fields=["store"])
-        except Exception as exc:
-            logger.exception("Failed to update plugin results: " + exc.message)
-            return False
-
-        return True
 
     def delete_pr_directory(self, directory):
         """We need to use the same user to delete the folder as created it"""
@@ -527,6 +511,7 @@ class PluginServer(object):
             logger.error("Failed to delete %s: %s", path, info)
 
         shutil.rmtree(directory, onerror=delete_error)
+
 
 if __name__ == '__main__':
     # Instantiate the xmlrpc server

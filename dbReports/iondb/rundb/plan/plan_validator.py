@@ -2,7 +2,7 @@
 
 from iondb.rundb.models import Chip, LibraryKey, RunType, KitInfo, common_CV, ApplicationGroup, \
     SampleGroupType_CV, dnaBarcode, ReferenceGenome, ApplProduct, PlannedExperiment, \
-    SampleAnnotation_CV, FlowOrder, Content
+    SampleAnnotation_CV, FlowOrder, Content, Plugin
 from iondb.utils import validation
 from iondb.rundb.plan.views_helper import dict_bed_hotspot
 import os
@@ -24,7 +24,7 @@ PROJECT_NAME_LENGTH = 64
 MIN_LIBRARY_READ_LENGTH = 0
 MAX_LIBRARY_READ_LENGTH = 1000
 
-VALID_TEMPLATING_SIZES = ["200", "400"]
+#VALID_TEMPLATING_SIZES = ["200", "400"]
 
 
 def validate_plan_name(value, displayedName='Plan Name'):
@@ -210,13 +210,17 @@ def validate_chip_type(value, displayedName='Chip Type', isNewPlan=None):
 
         chip = Chip.objects.filter(*query_args)
 
-        if not chip:
-            errors.append('Chip %s not found' % value)
-        elif chip and not chip[0].isActive:
-            if isNewPlan:
-                errors.append('Chip %s not active' % value)
+        if chip:
+            if not chip[0].isActive:
+                if isNewPlan:
+                    errors.append('Chip %s not active' % value)
+                else:
+                    warnings.append("Found inactive %s %s" % (displayedName, value))
             else:
-                warnings.append("Found inactive %s %s" % (displayedName, value))
+                if chip[0].getChipWarning:
+                    warnings.append(chip[0].getChipWarning)
+        else:
+            errors.append('Chip %s not found' % value)
 
     return errors, warnings
 
@@ -275,7 +279,8 @@ def validate_libraryReadLength(value, displayedName='Library Read Length'):
 
     return errors
 
-
+'''
+#templatingSize validation became obsolete, this field has been replaced by samplePrepProtocol
 def validate_templatingSize(value, displayedName='Templating Size'):
     """
     validate templating size case-insensitively with leading/trailing blanks in the input ignored
@@ -290,7 +295,7 @@ def validate_templatingSize(value, displayedName='Templating Size'):
         if not validation.is_valid_keyword(input, valid_values):
             errors.append(validation.invalid_keyword_error(displayedName, valid_values))
     return errors
-
+'''
 
 def validate_QC(value, displayedName):
     errors = []
@@ -337,13 +342,13 @@ def validate_barcode_kit_name(value, displayedName="Barcode Kit"):
     return errors
 
 
-def validate_sequencing_kit_name(value, displayedName="Sequencing Kit", isNewPlan=None):
+def validate_optional_kit_name(value, kitType, displayedName=None, isNewPlan=None):
     errors = []
     warnings = []
     if validation.has_value(value):
         value = value.strip()
+        query_kwargs = {"kitType__in": kitType}
 
-        query_kwargs = {"kitType__in": ["SequencingKit"]}
         query_args = (Q(name__iexact=value) | Q(description__iexact=value),)
 
         kit = KitInfo.objects.filter(*query_args, **query_kwargs)
@@ -494,7 +499,7 @@ def validate_sample_grouping(value, displayedName="Sample Grouping"):
     return errors
 
 
-def validate_barcode_sample_association(selectedBarcodes, selectedBarcodeKit):
+def validate_barcode_sample_association(selectedBarcodes, selectedBarcodeKit, isEndBarcodeExists = False):
     errors = {"MISSING_BARCODE": "", "DUPLICATE_BARCODE": ""}
 
     if not selectedBarcodeKit:
@@ -509,6 +514,8 @@ def validate_barcode_sample_association(selectedBarcodes, selectedBarcodeKit):
             if selectedBarcode in prior_barcodes:
                 # only include unique barcode selection error messages
                 message = "Barcode %s selections have to be unique\n" % selectedBarcode
+                if isEndBarcodeExists:
+                    message = "End " + message
 
                 value = errors["DUPLICATE_BARCODE"]
                 if message not in value:
@@ -521,14 +528,24 @@ def validate_barcode_sample_association(selectedBarcodes, selectedBarcodeKit):
     return errors
 
 
-def validate_targetRegionBedFile_for_runType(value, runType, reference, nucleotideType=None, applicationGroupName=None, displayedName="Target Regions BED File"):
+def validate_targetRegionBedFile_for_runType(value, runType, reference, nucleotideType=None, applicationGroupName=None, displayedName="Target Regions BED File", isPrimaryTargetRegion = True):
     """
     validate targetRegionBedFile based on the selected reference and the plan's runType
     """
     errors = []
     value = value.strip() if value else ""
+    if value:
+        missing_file = check_uploaded_files(bedfilePaths=[value])
+        if missing_file:
+            errors.append("%s : %s not found" % (displayedName, value))
+            logger.debug("plan_validator.validate_targetRegionBedFile_for_run() SKIPS validation due to no targetRegion file exists in db. value=%s" % (value))
+        return errors
 
     logger.debug("plan_validator.validate_targetRegionBedFile_for_runType() value=%s; runType=%s; reference=%s; nucleotideType=%s; applicationGroupName=%s" % (value, runType, reference, nucleotideType, applicationGroupName))
+
+    if not isPrimaryTargetRegion:
+        logger.debug("plan_validator.validate_targetRegionBedFile_for_run() SKIPS validation due to no validation rules for non-primary targetRegion. value=%s" %(value))
+        return errors
 
     if reference:
         if runType:
@@ -544,9 +561,9 @@ def validate_targetRegionBedFile_for_runType(value, runType, reference, nucleoti
                         isRequired = applProduct.isTargetRegionBEDFileSelectionRequiredForRefSelection
                         if isRequired and not validation.has_value(value):
                             # skip for now
-                            if runType == "AMPS_DNA_RNA" and nucleotideType and nucleotideType.upper() == "RNA":
+                            if runType in ["AMPS_DNA_RNA","AMPS_HD_DNA_RNA"] and nucleotideType and nucleotideType.upper() == "RNA":
                                 logger.debug("plan_validator.validate_targetRegionBedFile_for_runType() ALLOW MISSING targetRegionBed for runType=%s; nucleotideType=%s" % (runType, nucleotideType))
-                            elif runType == "AMPS_RNA" and applicationGroupName and applicationGroupName in ["DNA + RNA", "DNA and Fusions"]:
+                            elif runType in ["AMPS_RNA","AMPS_HD_RNA"]:
                                 logger.debug("plan_validator.validate_targetRegionBedFile_for_runType() ALLOW MISSING targetRegionBed for runType=%s; applicationGroupName=%s" % (runType, applicationGroupName))
                             else:
                                 errors.append("%s is required for this application" % (displayedName))
@@ -722,7 +739,8 @@ def check_uploaded_files(referenceNames=[], bedfilePaths=[]):
     
     content = Content.objects.filter(publisher__name="BED")
     for bedfile in bedfilePaths:
-        bedfile_err = validation.has_value(bedfile) and content.filter(path=bedfile).count() == 0
+        bedfile_err = validation.has_value(bedfile) and (content.filter(path=bedfile).count() == 0
+                                                         and content.filter(file=bedfile).count() == 0)
         if bedfile_err:
             missing_files.setdefault('bedfiles',[]).append(bedfile)
 
@@ -772,13 +790,37 @@ def validate_kit_chip_combination(bundle):
                             if runType:
                                 selectedKit_applicationType = selectedKit.applicationType
                                 if selectedKit_applicationType:
-                                    if "AMPS_ANY" in selectedKit_applicationType:
-                                        selectedKit_applicationType = ['AMPS', 'AMPS_DNA_RNA', 'AMPS_EXOME', 'AMPS_RNA']
-                                    if runType not in selectedKit_applicationType:
+                                    selectedKit_applicationType_list = get_kit_application_list(selectedKit_applicationType)
+                                    if runType not in selectedKit_applicationType_list:
                                         errorMsg = "specified Kit (%s) is not supported for %s (runType=%s)" % (selectedKit.name, selectedKit.get_applicationType_display(), runType)
                                         return errorMsg
-    except Exception, Err:
+    except Exception as Err:
         logger.debug("Error during plan creation %s" % str(Err))
         errorMsg = str(Err)
 
     return errorMsg
+
+
+def validate_plugin_configurations(selected_plugins):
+    """this will validate all of the plugins as part of the plan.  It returns a list of all of the validation error messages"""
+    validation_messages = list()
+    for name, plugin_parameters in selected_plugins.items():
+        try:
+            configuration = plugin_parameters.get('userInput', {}) or {}
+            plugin_model = Plugin.objects.get(name=plugin_parameters['name'], active=True)
+            validation_messages += Plugin.validate(plugin_model.id, configuration, 'pipeline')
+        except Exception as exc:
+            validation_messages += [str(exc)]
+    return validation_messages
+
+
+def get_kit_application_list(kit_applicationTypes):
+    """
+    translates any application shortcut keywords and returns all applications compatible with the kit as a list
+    """
+    all_applications = kit_applicationTypes
+    if "AMPS_ANY" in kit_applicationTypes.upper():
+        all_applications = kit_applicationTypes.replace("AMPS_ANY", "AMPS;AMPS_DNA_RNA;AMPS_EXOME;AMPS_RNA")
+
+    application_list = all_applications.split(";")
+    return [value.encode('UTF8') for value in application_list]

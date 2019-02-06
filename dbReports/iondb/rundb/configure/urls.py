@@ -23,6 +23,7 @@ urlpatterns = patterns(
     url(r'^plugins/$', 'views.configure_plugins', name="configure_plugins"),
     url(r'^mesh/$', 'views.configure_mesh', name="configure_mesh"),
     url(r'^mesh/link/$', 'views.link_mesh_node', name="link_mesh_node"),
+    url(r'^mesh/delete/(?P<pk>\d+)/$', 'views.delete_mesh_node', name="delete_mesh_node"),
     url(r'^plugins/plugin/install/$', 'views.configure_plugins_plugin_install', name="configure_plugins_plugin_install"),
     url(r'^plugins/plugin/(?P<pk>\d+)/configure/(?P<action>\w+)/$', 'views.configure_plugins_plugin_configure', name="configure_plugins_plugin_configure"),
     url(r'^plugins/plugin/(?P<pk>\d+)/configure/(?P<action>\w+)/pluginMedia/(?P<path>.*)$', 'views.configure_plugins_pluginmedia', name="configure_plugins_pluginmedia"),
@@ -52,6 +53,8 @@ urlpatterns = patterns(
 
     url(r'^references/genome/install_bedfiles/$', 'genomes.start_install_bedfiles', name='start_install_bedfiles'),
 
+    url(r'^references/genome/install_annotationfiles/$', 'genomes.start_install_annotationfiles', name='start_install_annotationfiles'),
+
     url(r'^references/barcodeset/$', 'views.references_barcodeset_add', name="references_barcodeset_add"),
     url(r'^references/barcodeset/(?P<barcodesetid>\d+)/$', 'views.references_barcodeset', name="references_barcodeset"),
     url(r'^references/barcodeset/(?P<barcodesetid>\d+)/delete/$', 'views.references_barcodeset_delete', name="references_barcodeset_delete"),
@@ -61,6 +64,7 @@ urlpatterns = patterns(
     url(r'^references/barcodeset/(?P<barcodesetid>\d+)/barcode/(?P<pks>[\d,]+)/delete/$', 'views.references_barcode_delete', name="references_barcode_delete"),
 
     url(r'^services/$', 'views.configure_services', name="configure_services"),
+    url(r'^services/telemetry_services_toggle$', 'views.configure_telemetry_services_toggle', name="configure_telemetry_services_toggle"),
     url(r'^services/cache/$', 'views.cache_status', name='cache_status'),
 
     url(r'^configure/$', 'views.configure_configure', name="configure_configure"),

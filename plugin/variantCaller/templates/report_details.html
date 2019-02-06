@@ -18,12 +18,17 @@
 <script src="slickgrid/lib/jquery.event.drag-2.0.min.js"></script>
 <script src="slickgrid/slick.core.js"></script>
 <script src="slickgrid/slick.grid.js"></script>
+<script src="slickgrid/plugins/slick.autotooltips.js"></script>
+<script src="slickgrid/plugins/slick.cellrangedecorator.js"></script>
 <script src="slickgrid/plugins/slick.rowselectionmodel.js"></script>
+<script src="slickgrid/plugins/slick.cellselectionmodel.js"></script>
+<script src="slickgrid/plugins/slick.cellrangeselector.js"></script>
+<script src="slickgrid/plugins/slick.cellcopymanager.js"></script>
 <script src="slickgrid/slick.dataview.js"></script>
+
 <script src="lifegrid/lifegrid.js"></script>
-
-
-<script src="lifegrid/allelesTable.js"></script>
+<script src="lifegrid/allelesTable.js"></script
+>
 <script src="bootstrap-select.js"></script>
 <script src="bootbox.min.js"></script>
 
@@ -119,7 +124,7 @@
                     <span class="headvc">Barcode</span>
                 </div>
                 <div class="span4 movedown5">
-                    {{barcode}}
+                  	 <a href="{{barcode_metal_url}}">{{barcode}}</a>
                 </div>
             </div>
             {% endif %}
@@ -129,7 +134,11 @@
                     <span class="headvc">Sample Name</span>
                 </div>
                 <div class="span4 movedown5">
-                    {{summary.sample_name}}
+                	{% if barcode %}
+                		{{summary.sample_name}}
+                	{% else %}
+						<a href="{{barcode_metal_url}}">{{summary.sample_name}}</a>
+                    {% endif %}
                 </div>
             </div>
 
@@ -150,7 +159,11 @@
                     {% if options.library_type == "tagseq" %}
                     Tag Sequencing
                     {% else %}
-                    {{options.library_type}}
+                      {% if options.library_type == "ampliseq_hd" %}
+                         AmpliSeq HD
+                      {% else %}
+                         {{options.library_type}}
+                      {% endif %}
                     {% endif %}
                 </div>
             </div>
@@ -281,7 +294,7 @@
                 </div>
             </div>
 
-            {% if options.library_type == "tagseq" %}
+            {% if options.has_umt %}
 			{% else %}
             <div class="row-fluid minibump">
                 <div class="span3 movedown5">
@@ -306,7 +319,7 @@
                 </div>
             </div>
 
-	        {% if options.library_type == "tagseq" %}
+	        {% if options.has_umt %}
             <div class="row-fluid minibump">
                 <div class="span3 movedown5">
                     <span class="headvc">Library Performance</span>
@@ -687,7 +700,7 @@ $(function () {
     		var error_text = '<div class="alert alert-danger" role="alert"> <i class="icon-info-sign"></i> <span class="sr-only"> <strong> Error: </strong> </span>' +  results['Error'] + '</div>';
             $("#rerun_message").html(error_text);
         }else{
-        	var success_text = '<div class="alert alert-success"> <strong>Success!</strong> Adjusted parameters have been save to Configuration "' + $("#new_config_name").val() + '".</div>';
+        	var success_text = '<div class="alert alert-success"> <strong>Success!</strong> Adjusted parameters have been saved to Configuration "' + $("#new_config_name").val() + '".</div>';
         	$("#rerun_message").html(success_text);
         }
         $("#postbutton").removeAttr('disabled');
@@ -703,7 +716,7 @@ $(function () {
 		return;
 	}
 	if (existing_config_names.indexOf(new_config_name) >= 0){
-    	bootbox.confirm('The configuration "' + new_config_name + '" existis. Do you want to overwrite it?', function(result){
+    	bootbox.confirm('Configuration "' + new_config_name + '" exists. Do you wish to overwrite it?', function(result){
         	if (result){
     			save_to_config();
     		}

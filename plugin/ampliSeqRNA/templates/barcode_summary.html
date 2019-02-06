@@ -63,6 +63,10 @@
     parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
     return parts.join(".");
   }
+  function numberToPercent(x) {
+    if( isNaN(x) ) return x;
+    return (100 * x)+"%";
+  }
 </script>
 
 <!-- Capture django variable in to javascript -->
@@ -95,8 +99,8 @@ $(document).ready(function() {
         pageSize: 20
       },
       columns: [
-        {field:"barcode_name"},
-        {field:"sample"},
+        {field:"barcode_name",width:"10%"},
+        {field:"sample",width:"40%"},
         {field:"mapped_reads"},
         {field:"valid_target"},
         {field:"detected_target"},
@@ -129,10 +133,10 @@ $(document).ready(function() {
         <td> #= barcode_details #</td>
         <td> #= (sample) ? sample : "None" #</td>
         <td> #= numberWithCommas(mapped_reads) # </td>
-        <td>#= valid_target #</td>
-        <td>#= detected_target #</td>
+        <td>#= numberToPercent(valid_target) #</td>
+        <td>#= numberToPercent(detected_target) #</td>
 {% if ercc_track %}
-        <td>#= ercc_target #</td>
+        <td>#= numberToPercent(ercc_target) #</td>
 {% endif %}
       </tr>
     </script>
@@ -203,6 +207,10 @@ $(document).ready(function() {
 <div style="text-align:center">Click here to refresh</div></a>
 {% endif %}
 
+{% if WarningMsg %}
+<br/><h3 style="text-align:center;color:orange">{{WarningMsg}}</h3>
+{% endif %}
+
 {% if bctable %}
 <li><a href="{{bctable}}" title='Click to download a table file of the Barcode Summary Report presented above.'>Download Barcode Summary Report</a></li>
 {% endif %}
@@ -255,7 +263,7 @@ NOTE: Unexpectedly low values of Mapped Reads or Valid Reads (%) may be due to u
   <img class="pull-left" src="/site_media/resources/img/ion-logo2.png" border="0">
   <div class="pull-right">
     <p>This is for research use only. It is not intended for any animal or human therapeutic or diagnostic use.</p>
-    <p><span class="copyright">&copy; 2014 Life Technologies Corporation. All Rights Reserved.</span>
+    <p><span class="copyright">&copy; 2018 Thermo Fisher Scientific Inc. All Rights Reserved.</span>
 
     <a href="/licenses/terms-of-use.txt">Terms &amp; Conditions</a></p>
   </div>
